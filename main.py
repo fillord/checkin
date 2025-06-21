@@ -25,7 +25,7 @@ from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
     register_face, awaiting_photo, awaiting_location, employee_cancel_command,
-    handle_late_checkin, ask_leave_start, ask_leave_get_reason
+    handle_late_checkin, ask_leave_start, ask_leave_get_reason, update_photo_start, update_photo_receive
 )
 from handlers_admin import (
     admin_command, admin_reports_menu, admin_get_today_report, admin_get_yesterday_report,
@@ -63,10 +63,13 @@ async def main() -> None:
             states={
                 config.CHOOSE_ACTION: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival), 
-                    MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure)
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_UPDATE_PHOTO}$"), update_photo_start),
+                    
                 ],
                 config.AWAITING_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)],
                 config.REGISTER_FACE: [MessageHandler(filters.PHOTO, register_face)],
+                config.AWAITING_NEW_FACE_PHOTO: [MessageHandler(filters.PHOTO, update_photo_receive)],
                 config.AWAITING_PHOTO: [MessageHandler(filters.PHOTO, awaiting_photo)],
                 config.AWAITING_LOCATION: [MessageHandler(filters.LOCATION, awaiting_location)],
             },

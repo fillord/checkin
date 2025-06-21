@@ -15,10 +15,11 @@ import database
 from database import is_day_finished_for_user
 from decorators import check_active_employee
 from keyboards import main_menu_keyboard
+import config
 from config import (
     CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE, LIVENESS_ACTIONS,
     BUTTON_ARRIVAL, BUTTON_DEPARTURE, WORK_LOCATION_COORDS, ALLOWED_RADIUS_METERS,
-    FACE_DISTANCE_THRESHOLD, AWAITING_LEAVE_REASON, ADMIN_IDS
+    AWAITING_LEAVE_REASON, ADMIN_IDS, AWAITING_NEW_FACE_PHOTO
 )
 
 # handlers_user.py
@@ -30,43 +31,55 @@ def _face_recognition_worker(image_bytes: bytes) -> np.ndarray | None:
     face_encodings = face_recognition.face_encodings(image)
     return face_encodings[0] if face_encodings else None
 
-def _face_verification_worker(image_bytes: bytes, known_encoding_bytes: bytes) -> tuple[float, bool]:
-    """Синхронная функция для сравнения двух лиц."""
+def _face_verification_worker(image_bytes: bytes, known_encoding_bytes: bytes, threshold: float) -> tuple[float, bool]:
+    """Синхронная функция для сравнения двух лиц с заданным порогом."""
     known_encoding = np.frombuffer(known_encoding_bytes)
     image = face_recognition.load_image_file(BytesIO(image_bytes))
-
+    
     new_face_encodings = face_recognition.face_encodings(image)
     if not new_face_encodings:
         return 0.0, False
-
+        
     distance = face_recognition.face_distance([known_encoding], new_face_encodings[0])[0]
     similarity_score = max(0.0, (1.0 - distance) * 100)
-    is_match = distance < FACE_DISTANCE_THRESHOLD
+    # --> ИЗМЕНЕНИЕ: Используем переданный threshold
+    is_match = distance < threshold
     return similarity_score, is_match
 
 
 logger = logging.getLogger(__name__)
 
-async def verify_face(user_id: int, new_photo_file_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[float, bool]:
+# handlers_user.py
+
+async def verify_face(user_id: int, new_photo_file_id: str, context: ContextTypes.DEFAULT_TYPE, custom_threshold: float = None) -> tuple[float, bool]:
+    """
+    Верифицирует лицо на фото.
+    Принимает необязательный custom_threshold для изменения строгости проверки.
+    """
     employee_data = await database.get_employee_data(user_id)
     if not employee_data or not employee_data["face_encoding"]:
         return 0.0, False
 
     known_encoding_bytes = employee_data["face_encoding"]
     new_photo_file = await context.bot.get_file(new_photo_file_id)
-
+    
     photo_stream = BytesIO()
     await new_photo_file.download_to_memory(photo_stream)
     image_bytes = photo_stream.getvalue()
 
+    # --> ИЗМЕНЕНИЕ: Определяем, какой порог использовать
+    # Если custom_threshold не передан, используем строгий порог для чекинов по умолчанию.
+    threshold_to_use = custom_threshold if custom_threshold is not None else config.FACE_DISTANCE_THRESHOLD_CHECKIN
+
     loop = asyncio.get_running_loop()
     executor = get_process_pool_executor()
 
+    # В воркер передаем нужный порог
     similarity_score, is_match = await loop.run_in_executor(
-        executor, _face_verification_worker, image_bytes, known_encoding_bytes
+        executor, _face_verification_worker, image_bytes, known_encoding_bytes, threshold_to_use
     )
-
-    logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Результат: {is_match}")
+    
+    logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Порог: < {threshold_to_use}. Результат: {is_match}")
     return similarity_score, is_match
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -231,6 +244,73 @@ async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["checkin_type"] = "DEPARTURE"
     await update.message.reply_text(f"Для подтверждения ухода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
     return AWAITING_PHOTO
+
+@check_active_employee
+async def update_photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс обновления эталонного фото."""
+    await update.message.reply_text(
+        "Вы начали процесс обновления фото.\n\n"
+        "Пожалуйста, сделайте и отправьте новое селфи хорошего качества, где хорошо видно ваше лицо.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return AWAITING_NEW_FACE_PHOTO
+
+
+@check_active_employee
+async def update_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает новое фото, верифицирует его со старым (с низким порогом) и обновляет."""
+    user = update.effective_user
+    new_photo_file_id = update.message.photo[-1].file_id
+
+    await update.message.reply_text("Фото получено. Сравниваю с вашим текущим фото в базе...")
+
+    # --> ИЗМЕНЕНИЕ: Вызываем verify_face, передавая менее строгий порог
+    similarity_score, is_match = await verify_face(
+        user.id,
+        new_photo_file_id,
+        context,
+        custom_threshold=config.FACE_DISTANCE_THRESHOLD_UPDATE
+    )
+
+    if not is_match:
+        await update.message.reply_text(
+            f"❌ Обновление отклонено.\nЛицо на новом фото не совпадает с вашим профилем (схожесть: {similarity_score:.1f}%).\n"
+            "Попробуйте еще раз или обратитесь к администратору.",
+            reply_markup=main_menu_keyboard()
+        )
+        return CHOOSE_ACTION
+
+    await update.message.reply_text("Верификация пройдена. Сохраняю новое фото...")
+
+    # Шаг 2: Если проверка пройдена, кодируем и сохраняем новое фото
+    try:
+        photo_file = await context.bot.get_file(new_photo_file_id)
+        photo_stream = BytesIO()
+        await photo_file.download_to_memory(photo_stream)
+        image_bytes = photo_stream.getvalue()
+
+        loop = asyncio.get_running_loop()
+        executor = get_process_pool_executor()
+        
+        # Используем воркер для кодирования нового лица
+        new_encoding = await loop.run_in_executor(
+            executor, _face_recognition_worker, image_bytes
+        )
+
+        if new_encoding is None:
+            await update.message.reply_text("Не удалось распознать лицо на новом фото. Попробуйте еще раз.", reply_markup=main_menu_keyboard())
+            return CHOOSE_ACTION
+
+        await database.set_face_encoding(user.id, new_encoding)
+        logger.info(f"Сотрудник {user.id} успешно обновил свое эталонное фото.")
+        await update.message.reply_text("✅ Ваше фото в профиле успешно обновлено!", reply_markup=main_menu_keyboard())
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка при обновлении фото для {user.id}: {e}")
+        await update.message.reply_text("Произошла внутренняя ошибка при сохранении фото. Попробуйте позже.", reply_markup=main_menu_keyboard())
+    
+    return CHOOSE_ACTION
+
 
 @check_active_employee
 async def awaiting_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
