@@ -3,6 +3,7 @@ import logging
 import aiosqlite
 import numpy as np
 import calendar
+from async_lru import alru_cache
 from datetime import datetime, date, time, timedelta
 from collections import defaultdict
 from zoneinfo import ZoneInfo
@@ -61,6 +62,7 @@ async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | 
             return {"id": row[0], "name": row[1], "face_encoding": row[2], "is_active": row[3] == 1}
     return None
 
+@alru_cache(maxsize=128)
 async def get_all_active_employees_with_schedules(for_day: int) -> list:
     # ... (скопируйте сюда содержимое функции get_all_active_employees_with_schedules из bot.py)
     async with aiosqlite.connect(DB_NAME) as db:
@@ -73,7 +75,7 @@ async def get_all_active_employees_with_schedules(for_day: int) -> list:
         cursor = await db.execute(query, (for_day,))
         return await cursor.fetchall()
 
-
+@alru_cache(maxsize=256)
 async def get_employee_today_schedule(telegram_id: int) -> dict | None:
     # ... (скопируйте сюда содержимое функции get_employee_today_schedule из bot.py)
     today_weekday = datetime.now(LOCAL_TIMEZONE).weekday()
@@ -138,6 +140,9 @@ async def add_or_update_employee(telegram_id: int, full_name: str, schedule_data
             if times:
                 await db.execute("INSERT INTO schedules (employee_telegram_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?)", (telegram_id, day_of_week, times['start'], times['end']))
         await db.commit()
+    logger.info("Обновление данных сотрудника -> очистка кэша расписаний.")
+    get_all_active_employees_with_schedules.cache_clear()
+    get_employee_today_schedule.cache_clear()
 
 async def log_check_in_attempt(telegram_id: int, check_in_type: str, status: str, lat=None, lon=None, distance=None, similarity=None):
     # ... (скопируйте сюда содержимое функции log_check_in_attempt из bot.py)

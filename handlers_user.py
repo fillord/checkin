@@ -6,6 +6,7 @@ import face_recognition
 import numpy as np
 from datetime import datetime, date, time, timedelta
 from io import BytesIO
+from concurrent.futures import ProcessPoolExecutor
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
@@ -19,31 +20,53 @@ from config import (
     FACE_DISTANCE_THRESHOLD
 )
 
+# handlers_user.py
+# ... (после всех import)
+
+def _face_recognition_worker(image_bytes: bytes) -> np.ndarray | None:
+    """Синхронная функция для поиска и кодирования лица на фото."""
+    image = face_recognition.load_image_file(BytesIO(image_bytes))
+    face_encodings = face_recognition.face_encodings(image)
+    return face_encodings[0] if face_encodings else None
+
+def _face_verification_worker(image_bytes: bytes, known_encoding_bytes: bytes) -> tuple[float, bool]:
+    """Синхронная функция для сравнения двух лиц."""
+    known_encoding = np.frombuffer(known_encoding_bytes)
+    image = face_recognition.load_image_file(BytesIO(image_bytes))
+
+    new_face_encodings = face_recognition.face_encodings(image)
+    if not new_face_encodings:
+        return 0.0, False
+
+    distance = face_recognition.face_distance([known_encoding], new_face_encodings[0])[0]
+    similarity_score = max(0.0, (1.0 - distance) * 100)
+    is_match = distance < FACE_DISTANCE_THRESHOLD
+    return similarity_score, is_match
+
+
 logger = logging.getLogger(__name__)
 
 async def verify_face(user_id: int, new_photo_file_id: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[float, bool]:
-    # ... (скопируйте сюда содержимое функции verify_face из bot.py)
     employee_data = await database.get_employee_data(user_id)
-    if not employee_data or not employee_data["face_encoding"]: return 0.0, False
-    known_encoding = np.frombuffer(employee_data["face_encoding"])
-    try:
-        new_photo_file = await context.bot.get_file(new_photo_file_id)
-        photo_stream = BytesIO()
-        await new_photo_file.download_to_memory(photo_stream)
-        photo_stream.seek(0)
-        image = face_recognition.load_image_file(photo_stream)
-        def blocking_io_task():
-            new_face_encodings = face_recognition.face_encodings(image)
-            if not new_face_encodings: return 0.0, False
-            distance = face_recognition.face_distance([known_encoding], new_face_encodings[0])[0]
-            return max(0.0, (1.0 - distance) * 100), distance < FACE_DISTANCE_THRESHOLD
-        similarity_score, is_match = await asyncio.to_thread(blocking_io_task)
-        logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Результат: {is_match}")
-        return similarity_score, is_match
-    except Exception as e:
-        logger.error(f"Ошибка во время верификации для {user_id}: {e}")
+    if not employee_data or not employee_data["face_encoding"]:
         return 0.0, False
 
+    known_encoding_bytes = employee_data["face_encoding"]
+    new_photo_file = await context.bot.get_file(new_photo_file_id)
+
+    photo_stream = BytesIO()
+    await new_photo_file.download_to_memory(photo_stream)
+    image_bytes = photo_stream.getvalue()
+
+    loop = asyncio.get_running_loop()
+    executor = context.bot_data['process_pool']
+
+    similarity_score, is_match = await loop.run_in_executor(
+        executor, _face_verification_worker, image_bytes, known_encoding_bytes
+    )
+
+    logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Результат: {is_match}")
+    return similarity_score, is_match
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции start_command из bot.py)
@@ -59,29 +82,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return CHOOSE_ACTION
 
 async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции register_face из bot.py)
     user = update.effective_user
-    photo_file_id = update.message.photo[-1].file_id
-    await update.message.reply_text("Спасибо. Обрабатываю фото...")
-    try:
-        photo_file = await context.bot.get_file(photo_file_id)
-        photo_stream = BytesIO()
-        await photo_file.download_to_memory(photo_stream)
-        image = face_recognition.load_image_file(photo_stream)
-        def blocking_io_task():
-            return face_recognition.face_encodings(image)[0] if face_recognition.face_encodings(image) else None
-        encoding = await asyncio.to_thread(blocking_io_task)
-        if encoding is None:
-            await update.message.reply_text("Лицо не найдено. Попробуйте другое фото.")
-            return REGISTER_FACE
-        await database.set_face_encoding(user.id, encoding)
-        logger.info(f"Сотрудник {user.id} зарегистрировал эталонное лицо.")
-        await update.message.reply_text("Отлично! Регистрация завершена.", reply_markup=main_menu_keyboard())
-        return CHOOSE_ACTION
-    except Exception as e:
-        logger.error(f"Ошибка регистрации лица для {user.id}: {e}")
-        await update.message.reply_text("Произошла ошибка. Попробуйте еще раз.")
+    photo_file = await update.message.photo[-1].get_file()
+
+    photo_stream = BytesIO()
+    await photo_file.download_to_memory(photo_stream)
+    image_bytes = photo_stream.getvalue()
+
+    await update.message.reply_text("Спасибо. Обрабатываю фото (это может занять несколько секунд)...")
+
+    loop = asyncio.get_running_loop()
+    executor = context.bot_data['process_pool']
+
+    encoding = await loop.run_in_executor(
+        executor, _face_recognition_worker, image_bytes
+    )
+
+    if encoding is None:
+        await update.message.reply_text("Лицо не найдено на фото. Пожалуйста, попробуйте другое, более четкое фото.")
         return REGISTER_FACE
+
+    await database.set_face_encoding(user.id, encoding)
+    logger.info(f"Сотрудник {user.id} успешно зарегистрировал эталонное лицо.")
+    await update.message.reply_text("Отлично! Ваше лицо зарегистрировано.", reply_markup=main_menu_keyboard())
+    return CHOOSE_ACTION
 
 
 async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
