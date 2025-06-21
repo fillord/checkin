@@ -139,6 +139,9 @@ async def main() -> None:
         # Запускаем проверку каждые 15 минут в течение всего дня, чтобы охватить любой график
         scheduler.add_job(jobs.send_departure_reminders, 'cron', hour='*', minute='*/5', args=[application])
         scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application]) # Применяем штраф в 00:05 за вчерашний день
+
+        scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=14, minute=35, args=[application, 'midday'])
+        scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=20, minute=00, args=[application, 'evening'])
     
         async with application:
             await database.init_db()

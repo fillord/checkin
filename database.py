@@ -401,3 +401,77 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         result_table.append(employee_row)
 
     return result_table
+
+# database.py
+
+async def get_dashboard_stats(for_date: date) -> dict:
+    """Собирает оперативную статистику за указанную дату для дашборда."""
+    stats = {
+        'total_scheduled': 0,
+        'arrived': {},  # {id: name, status: 'LATE'/'SUCCESS'}
+        'departed': {}, # {id: name}
+        'on_leave': {}, # {id: name, status: 'VACATION'/'SICK_LEAVE'/...}
+        'absent': {},   # {id: name}
+        'incomplete': {}# {id: name}
+    }
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        # 1. Получаем всех, кто должен работать сегодня
+        cursor_employees = await db.execute(
+            """
+            SELECT e.telegram_id, e.full_name FROM employees e
+            JOIN schedules s ON e.telegram_id = s.employee_telegram_id
+            WHERE e.is_active = TRUE AND s.day_of_week = ?
+            """,
+            (for_date.weekday(),)
+        )
+        scheduled_employees = {row[0]: row[1] for row in await cursor_employees.fetchall()}
+        stats['total_scheduled'] = len(scheduled_employees)
+        
+        # По умолчанию все, кто должен работать, - прогульщики
+        stats['absent'] = scheduled_employees.copy()
+
+        # 2. Получаем все события за сегодня
+        start_of_day_local = datetime.combine(for_date, time.min, tzinfo=LOCAL_TIMEZONE)
+        end_of_day_local = datetime.combine(for_date, time.max, tzinfo=LOCAL_TIMEZONE)
+        start_dt_utc = start_of_day_local.astimezone(ZoneInfo("UTC"))
+        end_dt_utc = end_of_day_local.astimezone(ZoneInfo("UTC"))
+
+        query = "SELECT employee_telegram_id, check_in_type, status FROM check_ins WHERE timestamp BETWEEN ? AND ?"
+        params = (start_dt_utc.strftime('%Y-%m-%d %H:%M:%S'), end_dt_utc.strftime('%Y-%m-%d %H:%M:%S'))
+        cursor_events = await db.execute(query, params)
+
+        # 3. Распределяем сотрудников по категориям
+        arrivals = {}
+        departures = set()
+        
+        for emp_id, check_type, status in await cursor_events.fetchall():
+            if emp_id not in scheduled_employees: continue # Пропускаем, если сотрудник не по графику
+
+            # Обрабатываем отпуска и отгулы
+            if check_type == 'SYSTEM_LEAVE':
+                stats['on_leave'][emp_id] = {'name': scheduled_employees[emp_id], 'status': status}
+                if emp_id in stats['absent']: del stats['absent'][emp_id]
+            # Обрабатываем приходы
+            elif check_type == 'ARRIVAL' and status in ('SUCCESS', 'LATE'):
+                arrivals[emp_id] = {'name': scheduled_employees[emp_id], 'status': status}
+                if emp_id in stats['absent']: del stats['absent'][emp_id]
+            # Обрабатываем уходы
+            elif check_type == 'DEPARTURE' and status == 'SUCCESS':
+                departures.add(emp_id)
+            # Обрабатываем штрафы за неотмеченный уход
+            elif check_type == 'SYSTEM' and status == 'ABSENT_INCOMPLETE':
+                stats['incomplete'][emp_id] = scheduled_employees[emp_id]
+                if emp_id in stats['absent']: del stats['absent'][emp_id]
+
+        # 4. Финальная сверка
+        for emp_id, data in arrivals.items():
+            if emp_id in stats['on_leave'] or emp_id in stats['incomplete']:
+                continue # Отпуск или штраф имеют приоритет
+            
+            if emp_id in departures:
+                stats['departed'][emp_id] = data['name']
+            else:
+                stats['arrived'][emp_id] = data
+    
+    return stats

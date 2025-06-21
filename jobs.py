@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from database import get_all_active_employees_with_schedules, has_checked_in_today, get_report_stats_for_period
 from config import LOCAL_TIMEZONE, ADMIN_IDS, LIVENESS_ACTIONS # LIVENESS_ACTIONS - пример, если понадобится
 import re
-
+import config
 import database
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,85 @@ async def send_report_for_period(start_date, end_date, context: ContextTypes.DEF
 async def send_daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Формирование и отправка автоматического дневного отчета...")
     await send_report_for_period(datetime.now(LOCAL_TIMEZONE).date(), datetime.now(LOCAL_TIMEZONE).date(), context, "Ежедневный отчет", ADMIN_IDS)
+
+# jobs.py
+
+def escape_markdown_v2(text: str) -> str:
+    """Экранирует специальные символы для Telegram MarkdownV2."""
+    # В MarkdownV2 нужно экранировать эти символы
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+# jobs.py
+
+def _format_user_list(users_dict: dict, show_status=False) -> str:
+    """Вспомогательная функция для красивого форматирования списка сотрудников."""
+    if not users_dict:
+        return "_пусто_"
+    
+    lines = []
+    for data in users_dict.values():
+        name = data['name'] if isinstance(data, dict) else data
+        line = escape_markdown_v2(name)
+        if show_status and isinstance(data, dict) and data.get('status'):
+            status_text = {
+                'LATE': 'опоздал(а)', 'VACATION': 'отпуск', 
+                'SICK_LEAVE': 'больничный', 'APPROVED_LEAVE': 'отпросился(ась)'
+            }.get(data['status'], '')
+            if status_text:
+                # --> ИЗМЕНЕНИЕ ЗДЕСЬ: Экранируем скобки
+                line += f" *\\({escape_markdown_v2(status_text)}\\)*"
+        lines.append(line)
+    return "\n".join(f" \\- {line}" for line in lines)
+
+
+async def send_dashboard_snapshot(context: ContextTypes.DEFAULT_TYPE, report_type: str):
+    """Формирует и отправляет сводку-дашборд администраторам."""
+    today = datetime.now(LOCAL_TIMEZONE).date()
+    title_text = "📊 Дневная сводка" if report_type == 'midday' else "📊 Вечерняя сводка"
+    logger.info(f"---[ЗАДАЧА]--- Формирование дашборда: {title_text} ---")
+
+    stats = await database.get_dashboard_stats(today)
+
+    # --> ИЗМЕНЕНИЕ: Экранируем все части заголовка перед сборкой
+    title = escape_markdown_v2(title_text)
+    date_str = escape_markdown_v2(today.strftime('%d.%m.%Y'))
+    
+    text_lines = [
+        f"*{title} на {date_str}*",
+        f"*Всего по графику:* {stats['total_scheduled']}\n",
+    ]
+
+    if report_type == 'midday':
+        text_lines.extend([
+            f"✅ *Пришли:* {len(stats['arrived'])}",
+            _format_user_list(stats['arrived'], show_status=True), "\n",
+            f"🌴 *Отсутствуют \\(уважит\\.\\):* {len(stats['on_leave'])}",
+            _format_user_list(stats['on_leave'], show_status=True), "\n",
+            f"❓ *Еще не отметились:* {len(stats['absent'])}",
+            _format_user_list(stats['absent']),
+        ])
+    
+    elif report_type == 'evening':
+        on_site_or_incomplete = {**stats['incomplete'], **{k: v['name'] for k,v in stats.get('arrived', {}).items() if k not in stats.get('departed', {})}}
+        absent_total = {**stats['absent'], **stats['incomplete']}
+
+        text_lines.extend([
+            f"🏁 *Завершили день \\(ушли\\):* {len(stats['departed'])}",
+             _format_user_list(stats['departed']), "\n",
+            f"🌴 *На больничном/в отпуске:* {len(stats['on_leave'])}",
+            _format_user_list(stats['on_leave'], show_status=True), "\n",
+            f"❌ *Прогул или не отметили уход:* {len(absent_total)}",
+            _format_user_list(absent_total), "\n"
+        ])
+
+    final_text = "\n".join(text_lines)
+
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=final_text, parse_mode='MarkdownV2')
+        except Exception as e:
+            logger.error(f"Не удалось отправить дашборд админу {admin_id}: {e}")
 
 # jobs.py
 async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
