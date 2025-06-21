@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ-панель</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <style>
+        /* Добавим немного стилей для наглядности отчета */
+        .status-late { background-color: #a66a00; }
+        .status-absent { background-color: #b82525; }
+        .status-leave { background-color: #3e65a3; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>Админ-панель бота</h1>
+        </header>
+        
+        <article>
+            <header><strong>Сводный отчет за месяц</strong></header>
+            
+            <form id="report-form">
+                <div class="grid">
+                    <select id="month-select" required></select>
+                    <select id="year-select" required></select>
+                    <button type="submit">Сформировать</button>
+                </div>
+            </form>
+            
+            <div id="report-container" style="margin-top: 1rem; overflow-x: auto;">
+                <div id="report-loading" aria-busy="true" style="display: none;">Формирование отчета...</div>
+                <div id="report-error" style="color: var(--pico-color-red); display: none;"></div>
+                <table id="report-table"></table>
+            </div>
+        </article>
+        
+    </main>
+
+    <script>
+        // --- Заполнение формы выбора даты ---
+        const monthSelect = document.getElementById('month-select');
+        const yearSelect = document.getElementById('year-select');
+        const months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+        const currentYear = new Date().getFullYear();
+        const currentMonth = new Date().getMonth();
+
+        for (let i = 0; i < 12; i++) {
+            const option = new Option(months[i], i + 1);
+            if (i === currentMonth) option.selected = true;
+            monthSelect.add(option);
+        }
+
+        for (let i = currentYear; i >= currentYear - 2; i--) {
+            yearSelect.add(new Option(i, i));
+        }
+
+        // --- Обработка отправки формы ---
+        document.getElementById('report-form').addEventListener('submit', event => {
+            event.preventDefault(); // Предотвращаем стандартную отправку формы
+            
+            const year = yearSelect.value;
+            const month = monthSelect.value;
+            
+            const loadingDiv = document.getElementById('report-loading');
+            const errorDiv = document.getElementById('report-error');
+            const table = document.getElementById('report-table');
+
+            // Показываем загрузку, прячем старые данные и ошибки
+            loadingDiv.style.display = 'block';
+            errorDiv.style.display = 'none';
+            table.innerHTML = '';
+
+            // Делаем запрос к нашему новому API
+            fetch(`/api/reports/monthly/${year}/${month}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Ошибка сети или сервера: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    loadingDiv.style.display = 'none';
+                    const reportData = result.data;
+                    
+                    // --- Рендеринг таблицы ---
+                    const thead = document.createElement('thead');
+                    const tbody = document.createElement('tbody');
+                    
+                    // Создаем заголовок таблицы
+                    const headerRow = document.createElement('tr');
+                    reportData[0].forEach(headerText => {
+                        const th = document.createElement('th');
+                        th.textContent = headerText;
+                        headerRow.appendChild(th);
+                    });
+                    thead.appendChild(headerRow);
+
+                    // Создаем строки с данными
+                    reportData.slice(1).forEach(rowData => {
+                        const row = document.createElement('tr');
+                        rowData.forEach((cellData, index) => {
+                            const cell = document.createElement('td');
+                            cell.textContent = cellData;
+                            
+                            // Раскрашиваем ячейки в зависимости от статуса
+                            if (index > 0) { // Не красим имя сотрудника
+                                if (cellData.includes('Опоздал')) cell.className = 'status-late';
+                                if (cellData.includes('Прогул') || cellData.includes('Пропустил')) cell.className = 'status-absent';
+                                if (cellData.includes('Отпуск') || cellData.includes('Больничный')) cell.className = 'status-leave';
+                            }
+                            row.appendChild(cell);
+                        });
+                        tbody.appendChild(row);
+                    });
+
+                    table.appendChild(thead);
+                    table.appendChild(tbody);
+                })
+                .catch(error => {
+                    loadingDiv.style.display = 'none';
+                    errorDiv.textContent = 'Не удалось загрузить отчет. Возможно, за этот период нет данных.';
+                    errorDiv.style.display = 'block';
+                    console.error('Error fetching report:', error);
+                });
+        });
+    </script>
+</body>
+</html>

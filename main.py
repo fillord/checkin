@@ -12,9 +12,12 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # concurrent.futures.ProcessPoolExecutor больше не нужен здесь напрямую
-
+from functools import partial
 # Импортируем наши модули
 import config
+from config import (
+    SCHEDULE_GET_EFFECTIVE_DATE
+)
 import database
 import jobs
 from app_context import shutdown_executor
@@ -32,6 +35,7 @@ from handlers_admin import (
     admin_delete_start, delete_get_id, delete_confirm, schedule_handler_factory,
     admin_back_to_menu, handle_leave_request_decision, admin_add_leave_start, admin_add_leave_get_id,
     admin_add_leave_get_type, admin_add_leave_get_period, admin_cancel_leave_start, admin_cancel_leave_get_id, admin_cancel_leave_get_period,
+    admin_web_ui, schedule_get_effective_date
 )
 
 # Настройка логирования
@@ -70,7 +74,13 @@ async def main() -> None:
             allow_reentry=True, name="checkin_conversation", persistent=True,
         )
         
-        schedule_handlers = [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_handler_factory(i)) for i in range(7)]
+        # --> ИЗМЕНЕНИЕ: Используем functools.partial для корректной передачи индекса дня
+        schedule_handlers = [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                (lambda day_index=i: schedule_handler_factory(day_index))()
+            ) for i in range(7)
+        ]
         admin_conv_handler = ConversationHandler(
             entry_points=[CommandHandler("admin", admin_command)],
             states={
@@ -100,20 +110,20 @@ async def main() -> None:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, admin_monthly_csv_get_month)
                 ],
                 config.ADD_GET_ID: [MessageHandler(filters.FORWARDED, add_get_id)],
-                config.ADD_GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_name)],
+                config.ADD_GET_NAME: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, add_get_name)
+                ],
                 config.MODIFY_GET_ID: [MessageHandler(filters.FORWARDED, modify_get_id)],
                 config.DELETE_GET_ID: [MessageHandler(filters.FORWARDED, delete_get_id)],
                 config.DELETE_CONFIRM: [MessageHandler(filters.Regex(f"^{config.BUTTON_CONFIRM_DELETE}$") | filters.Regex(f"^{config.BUTTON_CANCEL_DELETE}$"), delete_confirm)],
-                config.SCHEDULE_MON: [schedule_handlers[0]], config.SCHEDULE_TUE: [schedule_handlers[1]], config.SCHEDULE_WED: [schedule_handlers[2]],
-                config.SCHEDULE_THU: [schedule_handlers[3]], config.SCHEDULE_FRI: [schedule_handlers[4]], config.SCHEDULE_SAT: [schedule_handlers[5]],
-                config.SCHEDULE_SUN: [schedule_handlers[6]],
                 config.LEAVE_GET_ID: [MessageHandler(filters.FORWARDED, admin_add_leave_get_id)],
                 config.LEAVE_GET_TYPE: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_leave_get_type)
                 ],
                 config.LEAVE_GET_PERIOD: [
-                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_reports_menu), # <-- ИЗМЕНЕНИЕ
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_reports_menu),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_leave_get_period)
                 ],
                 config.CANCEL_LEAVE_GET_ID: [MessageHandler(filters.FORWARDED, admin_cancel_leave_get_id)],
@@ -121,6 +131,20 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, admin_cancel_leave_get_period)
                 ],
+                config.SCHEDULE_GET_EFFECTIVE_DATE: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_get_effective_date)
+                ],
+                
+                # --> ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ <--
+                # Добавляем обработчик кнопки "Назад" для КАЖДОГО дня недели
+                config.SCHEDULE_MON: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[0]],
+                config.SCHEDULE_TUE: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[1]],
+                config.SCHEDULE_WED: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[2]],
+                config.SCHEDULE_THU: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[3]],
+                config.SCHEDULE_FRI: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[4]],
+                config.SCHEDULE_SAT: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[5]],
+                config.SCHEDULE_SUN: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[6]],
             },
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
             name="admin_conversation", persistent=True,
@@ -131,6 +155,7 @@ async def main() -> None:
         
         # Добавляем отдельный обработчик для решения админа по уходу
         application.add_handler(CallbackQueryHandler(handle_leave_request_decision, pattern="^leave:"))
+        application.add_handler(CommandHandler("web", admin_web_ui))
 
         scheduler = AsyncIOScheduler(timezone=config.LOCAL_TIMEZONE)
         scheduler.add_job(jobs.check_and_send_notifications, 'interval', minutes=1, args=[application])

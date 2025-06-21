@@ -164,12 +164,14 @@ async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['unhandled_late_users'] = set() # Очищаем и список опоздавших
         context.bot_data['last_cleanup_date'] = today_str
 
-    employees = await database.get_all_active_employees_with_schedules(now.weekday())
+    employees = await database.get_all_active_employees_with_schedules(now.date())
     if not employees:
         return
 
     for emp_id, name, start_time_str in employees:
         try:
+            if start_time_str is None:
+                continue
             start_time = time.fromisoformat(start_time_str)
             shift_start_datetime = datetime.combine(now.date(), start_time, tzinfo=LOCAL_TIMEZONE)
 
@@ -206,7 +208,7 @@ async def send_departure_reminders(context: ContextTypes.DEFAULT_TYPE):
     logger.info("---[ЗАДАЧА]--- Запуск проверки напоминаний об уходе ---")
 
     # Получаем всех, кто должен был работать сегодня
-    employees = await database.get_all_active_employees_with_schedules(now.weekday())
+    employees = await database.get_all_active_employees_with_schedules(now.date())
 
     for emp_id, name, _ in employees:
         try:
@@ -253,12 +255,14 @@ async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
     yesterday = now.date() - timedelta(days=1) # Задача запускается после полуночи за вчерашний день
     logger.info(f"---[ЗАДАЧА]--- Применение штрафов за неотмеченный уход за {yesterday.isoformat()} ---")
 
-    employees = await database.get_all_active_employees_with_schedules(yesterday.weekday())
+    employees = await database.get_all_active_employees_with_schedules(yesterday)
 
     for emp_id, name, _ in employees:
         try:
             # Проверяем чекины именно за вчерашний день
             has_arrived = await database.has_checked_in_on_date(emp_id, "ARRIVAL", yesterday)
+            if not has_arrived:
+                continue
             has_departed = await database.has_checked_in_on_date(emp_id, "DEPARTURE", yesterday)
 
             if has_arrived and not has_departed:

@@ -5,7 +5,7 @@ import csv
 from datetime import datetime, date, timedelta
 from io import StringIO, BytesIO
 
-from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import ContextTypes, ConversationHandler
 
 import database
@@ -19,7 +19,8 @@ from config import (
     ADMIN_IDS, ADMIN_MENU, ADMIN_REPORTS_MENU, REPORT_GET_DATES, MONTHLY_CSV_GET_MONTH,
     ADD_GET_ID, ADD_GET_NAME, MODIFY_GET_ID, DELETE_GET_ID, DELETE_CONFIRM,
     SCHEDULE_MON, DAYS_OF_WEEK, BUTTON_ADMIN_BACK, BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE,
-    LEAVE_GET_ID, LEAVE_GET_TYPE, LEAVE_GET_PERIOD, CANCEL_LEAVE_GET_ID, CANCEL_LEAVE_GET_PERIOD
+    LEAVE_GET_ID, LEAVE_GET_TYPE, LEAVE_GET_PERIOD, CANCEL_LEAVE_GET_ID, CANCEL_LEAVE_GET_PERIOD,
+    SCHEDULE_GET_EFFECTIVE_DATE, LOCAL_TIMEZONE
 )
 
 logger = logging.getLogger(__name__)
@@ -120,8 +121,9 @@ async def admin_monthly_csv_start(update: Update, context: ContextTypes.DEFAULT_
     return MONTHLY_CSV_GET_MONTH
 
 
+# handlers_admin.py
+
 async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции admin_monthly_csv_get_month из bot.py)
     try:
         month_str, year_str = update.message.text.strip().split('.')
         month, year = int(month_str), int(year_str)
@@ -132,8 +134,8 @@ async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFA
 
         if not summary_data or len(summary_data) <= 1:
             await update.message.reply_text("Нет данных для формирования отчета за указанный период.")
-            await admin_reports_menu(update, context) 
-            return ADMIN_REPORTS_MENU
+            await admin_reports_menu(update, context)
+            return config.ADMIN_REPORTS_MENU
 
         output = StringIO()
         writer = csv.writer(output)
@@ -146,15 +148,17 @@ async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFA
             document=InputFile(csv_bytes, filename=filename),
             caption=f"Сводный отчет по посещаемости за {month:02d}.{year}"
         )
-        await admin_reports_menu(update, context) 
-        return ADMIN_REPORTS_MENU
+        await admin_reports_menu(update, context)
+        return config.ADMIN_REPORTS_MENU
 
     except (ValueError, IndexError):
+        # --> ИСПРАВЛЕНИЕ ЗДЕСЬ: Экранируем точки в сообщении об ошибке
+        error_text = "Неверный формат\\. Пожалуйста, введите месяц и год как `ММ\\.ГГГГ` и попробуйте снова\\."
         await update.message.reply_text(
-            "Неверный формат. Пожалуйста, введите месяц и год как `ММ.ГГГГ` и попробуйте снова.",
+            text=error_text,
             parse_mode='MarkdownV2'
         )
-        return MONTHLY_CSV_GET_MONTH
+        return config.MONTHLY_CSV_GET_MONTH
 
 async def handle_leave_request_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает решение администратора по запросу на уход."""
@@ -211,10 +215,19 @@ async def add_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def add_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции add_get_name из bot.py)
     context.user_data['new_employee_name'] = update.message.text
-    await update.message.reply_text(f"Шаг 3: Настройка графика.\nВведите время для {DAYS_OF_WEEK[0]} (формат `09:00-18:00` или `0`).")
-    return SCHEDULE_MON
+    
+    # --> ИЗМЕНЕНИЕ: Добавлено экранирование всех точек
+    text_to_send = (
+        "ФИО принято\\.\n"
+        "С какой даты будет действовать график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
+    )
+    
+    await update.message.reply_text(
+        text=text_to_send,
+        parse_mode='MarkdownV2'
+    )
+    return config.SCHEDULE_GET_EFFECTIVE_DATE
 
 
 async def admin_modify_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -224,20 +237,60 @@ async def admin_modify_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return MODIFY_GET_ID
 
 
+# handlers_admin.py
+
 async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции modify_get_id из bot.py)
     if not isinstance(update.message.forward_origin, MessageOriginUser):
         await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
-        return MODIFY_GET_ID
+        return config.MODIFY_GET_ID
+        
     user_id = update.message.forward_origin.sender_user.id
     employee = await database.get_employee_data(user_id, include_inactive=True)
     if not employee:
         await update.message.reply_text("Этот пользователь не найден в базе данных.")
-        return MODIFY_GET_ID
+        return config.MODIFY_GET_ID
+        
     context.user_data['target_employee_id'] = user_id
     context.user_data['target_employee_name'] = employee['name']
-    await update.message.reply_text(f"Изменение графика для: {employee['name']}.\nВведите новое время для {DAYS_OF_WEEK[0]} (`09:00-18:00` или `0`).")
-    return SCHEDULE_MON
+    
+    # --> ИСПРАВЛЕНИЕ ЗДЕСЬ: Экранируем точки в сообщении
+    text_to_send = (
+        f"Изменение графика для: {employee['name']}\\.\n"
+        f"С какой даты будет действовать новый график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
+    )
+    
+    await update.message.reply_text(
+        text=text_to_send,
+        parse_mode='MarkdownV2'
+    )
+    return config.SCHEDULE_GET_EFFECTIVE_DATE
+
+# handlers_admin.py
+
+async def schedule_get_effective_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает дату вступления в силу графика и проверяет, что она не в прошлом."""
+    text = update.message.text.strip().lower()
+    effective_date = None
+    today = datetime.now(config.LOCAL_TIMEZONE).date()
+
+    if text == 'сегодня':
+        effective_date = today
+    else:
+        try:
+            effective_date = datetime.strptime(text, '%d.%m.%Y').date()
+        except ValueError:
+            await update.message.reply_text("Неверный формат. Введите дату как `ДД.ММ.ГГГГ` или `сегодня`.", parse_mode='MarkdownV2')
+            return config.SCHEDULE_GET_EFFECTIVE_DATE
+
+    # --> НОВАЯ ПРОВЕРКА: Убедимся, что дата не в прошлом
+    if effective_date < today:
+        await update.message.reply_text("❌ Ошибка: Нельзя устанавливать или изменять график для прошедших дат. Пожалуйста, введите сегодняшнюю или будущую дату.")
+        return config.SCHEDULE_GET_EFFECTIVE_DATE # Возвращаемся на этот же шаг для повторного ввода
+
+    context.user_data['schedule_effective_date'] = effective_date
+    await update.message.reply_text(f"График будет действовать с {effective_date.strftime('%d.%m.%Y')}.\nТеперь введите время для {config.DAYS_OF_WEEK[0]} (`09:00-18:00` или `0`).")
+    return config.SCHEDULE_MON
+
 
 
 async def admin_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -298,9 +351,11 @@ def schedule_handler_factory(day_index: int):
                     await update.message.reply_text("Произошла внутренняя ошибка. Попробуйте снова.", reply_markup=admin_menu_keyboard())
                     context.user_data.clear()
                     return ADMIN_MENU
+                logger.info(f"ПОПЫТКА СОХРАНЕНИЯ ГРАФИКА. Данные: {context.user_data.get('schedule')}")
                 
                 schedule_data = context.user_data['schedule']
-                await database.add_or_update_employee(telegram_id, full_name, schedule_data)
+                effective_date = context.user_data['schedule_effective_date']
+                await database.add_or_update_employee(telegram_id, full_name, schedule_data, effective_date)
                 
                 escaped_name = re.sub(r'([_*\[\]()~`>#\+\-=|{}.!])', r'\\\1', full_name)
                 await update.message.reply_text(f"✅ Данные для сотрудника *{escaped_name}* успешно сохранены\\!", parse_mode='MarkdownV2', reply_markup=admin_menu_keyboard())
@@ -460,3 +515,23 @@ async def admin_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.clear()
     await admin_command(update, context)
     return ADMIN_MENU
+
+async def admin_web_ui(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет кнопку для открытия веб-интерфейса администратора."""
+    # ВАЖНО: URL должен указывать на адрес, где запущен ваш webapp.
+    # Для локального теста используется ngrok или аналоги для получения https-ссылки.
+    # Для боевого сервера это будет ваш публичный домен.
+    # Пока мы используем заглушку, которую вы замените на реальный URL.
+    # ПРИМЕР: web_app_url = "https://your-domain.com"
+    web_app_url = "https://google.com" # ЗАМЕНИТЕ ЭТО НА ВАШ РЕАЛЬНЫЙ URL В БУДУЩЕМ
+
+    keyboard = [[
+        InlineKeyboardButton(
+            "Открыть админ-панель",
+            web_app=WebAppInfo(url=web_app_url)
+        )
+    ]]
+    await update.message.reply_text(
+        "Нажмите на кнопку ниже, чтобы открыть веб-интерфейс администратора.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
