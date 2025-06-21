@@ -17,7 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 import database
 import jobs
-from app_context import process_pool_executor # <-- ИЗМЕНЕНИЕ
+from app_context import shutdown_executor
 from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
@@ -120,7 +120,7 @@ async def main() -> None:
             
     finally:
         logger.info("Закрытие пула процессов...")
-        process_pool_executor.shutdown()
+        shutdown_executor()
 
 if __name__ == "__main__":
     try:
