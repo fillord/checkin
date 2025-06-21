@@ -136,7 +136,7 @@ async def is_day_finished_for_user(telegram_id: int) -> bool:
     end_of_day_utc = end_of_day_local.astimezone(ZoneInfo("UTC"))
     
     # Ищем либо успешный уход, либо одобренный системный уход
-    statuses_to_check = ('SUCCESS', 'APPROVED_LEAVE')
+    statuses_to_check = ('SUCCESS', 'APPROVED_LEAVE', 'VACATION', 'SICK_LEAVE')
     
     async with aiosqlite.connect(DB_NAME) as db:
         query = f"""
@@ -244,9 +244,12 @@ async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
                 if weekday in schedules.get(emp_id, set()):
                     stats['total_work_days'] += 1
                     status = events_by_date.get(current_date, {}).get(emp_id)
-
-                    if status == 'ABSENT_INCOMPLETE' or status is None:
-                         if current_date <= datetime.now(LOCAL_TIMEZONE).date():
+                    
+                    # ИЗМЕНЕНИЕ: Отпуска и больничные не считаются прогулами
+                    if status in ('VACATION', 'SICK_LEAVE', 'APPROVED_LEAVE'):
+                        continue # Просто пропускаем этот день для сотрудника
+                    elif status == 'ABSENT_INCOMPLETE' or status is None:
+                        if current_date <= datetime.now(LOCAL_TIMEZONE).date():
                             stats['absences'][name].append(current_date.strftime('%d.%m'))
                     elif status == 'LATE':
                         stats['total_arrivals'] += 1
@@ -262,9 +265,55 @@ async def get_all_checkins_for_export() -> list:
         query = "SELECT c.timestamp, e.full_name, c.check_in_type, c.status, c.latitude, c.longitude, c.distance_meters, c.face_similarity FROM check_ins c JOIN employees e ON c.employee_telegram_id = e.telegram_id ORDER BY c.timestamp DESC"
         return await (await db.execute(query)).fetchall()
 
+async def add_leave_period(telegram_id: int, start_date: date, end_date: date, leave_type: str):
+    """Добавляет записи об отпуске/больничном для сотрудника на заданный период."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Сначала получаем график сотрудника, чтобы не ставить отметки в его выходные
+        cursor_schedules = await db.execute("SELECT day_of_week FROM schedules WHERE employee_telegram_id = ?", (telegram_id,))
+        work_days = {row[0] for row in await cursor_schedules.fetchall()}
+        
+        leave_status = 'VACATION' if leave_type == 'Отпуск' else 'SICK_LEAVE'
+        
+        for current_date in (start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)):
+            if current_date.weekday() in work_days:
+                # Вставляем отметку на конец рабочего дня
+                end_of_day_local = datetime.combine(current_date, time(23, 59, 58), tzinfo=LOCAL_TIMEZONE)
+                timestamp_utc = end_of_day_local.astimezone(ZoneInfo("UTC")).strftime('%Y-%m-%d %H:%M:%S')
+                
+                await db.execute(
+                    "INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status) VALUES (?, ?, ?, ?)",
+                    (timestamp_utc, telegram_id, 'SYSTEM_LEAVE', leave_status)
+                )
+        await db.commit()
+        logger.info(f"Для сотрудника {telegram_id} назначен(а) {leave_type} с {start_date} по {end_date}")
+
+async def cancel_leave_period(telegram_id: int, start_date: date, end_date: date) -> int:
+    """Удаляет записи об отпуске/больничном для сотрудника на заданный период."""
+    start_dt_local = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE)
+    end_dt_local = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE)
+    start_dt_utc_str = start_dt_local.astimezone(ZoneInfo("UTC")).strftime('%Y-%m-%d %H:%M:%S')
+    end_dt_utc_str = end_dt_local.astimezone(ZoneInfo("UTC")).strftime('%Y-%m-%d %H:%M:%S')
+
+    leave_statuses = ('VACATION', 'SICK_LEAVE', 'APPROVED_LEAVE')
+    
+    query = f"""
+        DELETE FROM check_ins 
+        WHERE employee_telegram_id = ? 
+        AND status IN ({','.join('?'*len(leave_statuses))})
+        AND timestamp BETWEEN ? AND ?
+    """
+    params = (telegram_id, *leave_statuses, start_dt_utc_str, end_dt_utc_str)
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(query, params)
+        await db.commit()
+        logger.info(f"Для сотрудника {telegram_id} отменено отсутствие с {start_date} по {end_date}. Удалено записей: {cursor.rowcount}")
+        return cursor.rowcount
 
 async def get_monthly_summary_data(year: int, month: int) -> list[list]:
-    # ... (скопируйте сюда содержимое функции get_monthly_summary_data из bot.py)
+    """
+    Собирает и формирует данные для сводного месячного отчета в виде пивот-таблицы.
+    """
     try:
         start_date = date(year, month, 1)
         num_days = calendar.monthrange(year, month)[1]
@@ -274,8 +323,6 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         return []
 
     # --- 1. Получение всех необходимых данных ---
-    
-    # Конвертируем даты в UTC для запроса к БД
     start_dt_local = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE)
     end_dt_local = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE)
     start_dt_utc = start_dt_local.astimezone(ZoneInfo("UTC"))
@@ -286,59 +333,68 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
     checkins = defaultdict(dict)
 
     async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем сотрудников
         cursor_employees = await db.execute("SELECT telegram_id, full_name FROM employees WHERE is_active = TRUE ORDER BY full_name")
         for row in await cursor_employees.fetchall():
             all_employees[row[0]] = row[1]
         
-        # Получаем все расписания
         cursor_schedules = await db.execute("SELECT employee_telegram_id, day_of_week FROM schedules")
         for emp_id, day in await cursor_schedules.fetchall():
             schedules[emp_id].add(day)
 
-        # Получаем все чекины за месяц
-        query = "SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE check_in_type = 'ARRIVAL' AND timestamp BETWEEN ? AND ?"
+        # Получаем все чекины и системные отметки, отдавая приоритет системным
+        query = """
+            SELECT employee_telegram_id, timestamp, status FROM check_ins 
+            WHERE timestamp BETWEEN ? AND ? 
+            ORDER BY CASE status 
+                WHEN 'ABSENT_INCOMPLETE' THEN 1 
+                WHEN 'VACATION' THEN 2
+                WHEN 'SICK_LEAVE' THEN 2
+                WHEN 'APPROVED_LEAVE' THEN 2
+                ELSE 3 
+            END
+        """
         params = (start_dt_utc.strftime('%Y-%m-%d %H:%M:%S'), end_dt_utc.strftime('%Y-%m-%d %H:%M:%S'))
         cursor_arrivals = await db.execute(query, params)
         for emp_id, ts_str, status in await cursor_arrivals.fetchall():
             utc_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
-            local_date_str = utc_dt.astimezone(LOCAL_TIMEZONE).date().isoformat()
-            checkins[emp_id][local_date_str] = status
+            local_date_iso = utc_dt.astimezone(LOCAL_TIMEZONE).date().isoformat()
+            if emp_id not in checkins or local_date_iso not in checkins[emp_id]:
+                 checkins[emp_id][local_date_iso] = status
+
 
     # --- 2. Формирование таблицы ---
-
-    # Заголовок таблицы (Сотрудник, 01.06, 02.06, ...)
     header = ["Сотрудник"] + [f"{day:02d}.{month:02d}" for day in range(1, num_days + 1)]
     result_table = [header]
 
-    # Проходим по каждому сотруднику
     for emp_id, name in all_employees.items():
         employee_row = [name]
-        # Проходим по каждому дню месяца
         for day in range(1, num_days + 1):
             current_date = date(year, month, day)
             current_date_iso = current_date.isoformat()
             weekday = current_date.weekday()
             
-            status_str = "Выходной" # Статус по умолчанию
+            status_str = "Выходной"
 
-            # Если день рабочий по графику
             if weekday in schedules.get(emp_id, set()):
-                # --> ИЗМЕНЕНИЕ: Логика определения статуса дня
-                checkin_status = checkins.get(emp_id, {}).get(current_date_iso)
+                # --> ИСПРАВЛЕНИЕ ЗДЕСЬ: Используем одну и ту же переменную `final_status`
+                final_status = checkins.get(emp_id, {}).get(current_date_iso)
                 
-                if checkin_status == 'ABSENT_INCOMPLETE':
-                    status_str = 'Прогул (нет ухода)'
-                elif checkin_status == 'APPROVED_LEAVE': # <-- НОВЫЙ СТАТУС
+                if final_status == 'VACATION':
+                    status_str = 'Отпуск'
+                elif final_status == 'SICK_LEAVE':
+                    status_str = 'Больничный'
+                elif final_status == 'APPROVED_LEAVE':
                     status_str = 'Отпросился'
-                elif checkin_status == 'LATE':
+                elif final_status == 'ABSENT_INCOMPLETE':
+                    status_str = 'Прогул (нет ухода)'
+                elif final_status == 'LATE':
                     status_str = 'Опоздал'
-                elif checkin_status == 'SUCCESS':
+                elif final_status == 'SUCCESS':
                     status_str = 'Вовремя'
-                else: # Если чекина не было (status is None)
+                else: # Если final_status is None
                     if current_date <= datetime.now(LOCAL_TIMEZONE).date():
                         status_str = 'Пропустил'
-                    else: # Для будущих рабочих дней
+                    else:
                         status_str = '—'
 
             employee_row.append(status_str)

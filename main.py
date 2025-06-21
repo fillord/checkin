@@ -30,7 +30,8 @@ from handlers_admin import (
     admin_export_csv, admin_monthly_csv_start, admin_monthly_csv_get_month,
     admin_add_start, add_get_id, add_get_name, admin_modify_start, modify_get_id,
     admin_delete_start, delete_get_id, delete_confirm, schedule_handler_factory,
-    admin_back_to_menu, handle_leave_request_decision
+    admin_back_to_menu, handle_leave_request_decision, admin_add_leave_start, admin_add_leave_get_id,
+    admin_add_leave_get_type, admin_add_leave_get_period, admin_cancel_leave_start, admin_cancel_leave_get_id, admin_cancel_leave_get_period,
 )
 
 # Настройка логирования
@@ -78,6 +79,8 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_MODIFY}$"), admin_modify_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_DELETE}$"), admin_delete_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_REPORTS}$"), admin_reports_menu),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_LEAVE}$"), admin_add_leave_start),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_LEAVE}$"), admin_cancel_leave_start),
                 ],
                 config.ADMIN_REPORTS_MENU: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_REPORT_TODAY}$"), admin_get_today_report),
@@ -104,6 +107,20 @@ async def main() -> None:
                 config.SCHEDULE_MON: [schedule_handlers[0]], config.SCHEDULE_TUE: [schedule_handlers[1]], config.SCHEDULE_WED: [schedule_handlers[2]],
                 config.SCHEDULE_THU: [schedule_handlers[3]], config.SCHEDULE_FRI: [schedule_handlers[4]], config.SCHEDULE_SAT: [schedule_handlers[5]],
                 config.SCHEDULE_SUN: [schedule_handlers[6]],
+                config.LEAVE_GET_ID: [MessageHandler(filters.FORWARDED, admin_add_leave_get_id)],
+                config.LEAVE_GET_TYPE: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_leave_get_type)
+                ],
+                config.LEAVE_GET_PERIOD: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_reports_menu), # <-- ИЗМЕНЕНИЕ
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_leave_get_period)
+                ],
+                config.CANCEL_LEAVE_GET_ID: [MessageHandler(filters.FORWARDED, admin_cancel_leave_get_id)],
+                config.CANCEL_LEAVE_GET_PERIOD: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, admin_cancel_leave_get_period)
+                ],
             },
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
             name="admin_conversation", persistent=True,

@@ -10,11 +10,16 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 import database
 from jobs import send_report_for_period
-from keyboards import admin_menu_keyboard, reports_menu_keyboard
+from keyboards import admin_menu_keyboard, reports_menu_keyboard, leave_type_keyboard
+from keyboards import (
+    BUTTON_LEAVE_TYPE_VACATION, BUTTON_LEAVE_TYPE_SICK
+)
+import config
 from config import (
     ADMIN_IDS, ADMIN_MENU, ADMIN_REPORTS_MENU, REPORT_GET_DATES, MONTHLY_CSV_GET_MONTH,
     ADD_GET_ID, ADD_GET_NAME, MODIFY_GET_ID, DELETE_GET_ID, DELETE_CONFIRM,
-    SCHEDULE_MON, DAYS_OF_WEEK, BUTTON_ADMIN_BACK, BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE
+    SCHEDULE_MON, DAYS_OF_WEEK, BUTTON_ADMIN_BACK, BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE,
+    LEAVE_GET_ID, LEAVE_GET_TYPE, LEAVE_GET_PERIOD, CANCEL_LEAVE_GET_ID, CANCEL_LEAVE_GET_PERIOD
 )
 
 logger = logging.getLogger(__name__)
@@ -308,6 +313,147 @@ def schedule_handler_factory(day_index: int):
             return ADMIN_MENU
     return get_schedule_for_day
 
+async def admin_add_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 1: Просит переслать сообщение от сотрудника."""
+    await update.message.reply_text(
+        "Назначение отсутствия. Перешлите сообщение от сотрудника, которому нужно назначить отпуск/больничный.",
+        reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
+    )
+    return LEAVE_GET_ID
+
+async def admin_add_leave_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 2: Получает ID, просит выбрать тип отсутствия."""
+    if not isinstance(update.message.forward_origin, MessageOriginUser):
+        await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
+        return LEAVE_GET_ID
+        
+    user_id = update.message.forward_origin.sender_user.id
+    employee = await database.get_employee_data(user_id, include_inactive=True)
+    if not employee:
+        await update.message.reply_text("Этот пользователь не найден в базе данных.")
+        return LEAVE_GET_ID
+    
+    context.user_data['leave_employee_id'] = user_id
+    context.user_data['leave_employee_name'] = employee['name']
+    
+    await update.message.reply_text(
+        f"Выбран сотрудник: {employee['name']}.\nТеперь выберите тип отсутствия.",
+        reply_markup=leave_type_keyboard()
+    )
+    return LEAVE_GET_TYPE
+
+async def admin_add_leave_get_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 3: Получает тип, просит ввести период."""
+    leave_type = update.message.text
+    if leave_type not in (config.BUTTON_LEAVE_TYPE_VACATION, config.BUTTON_LEAVE_TYPE_SICK):
+        await update.message.reply_text("Пожалуйста, используйте кнопки для выбора типа.")
+        return config.LEAVE_GET_TYPE
+    
+    context.user_data['leave_type'] = leave_type
+
+    # --> ИЗМЕНЕНИЕ: Добавлено экранирование точек с помощью двойного слэша \\.
+    text = f"Тип: {leave_type}\\. Теперь введите период в формате `ДД\\.ММ\\.ГГГГ-ДД\\.ММ\\.ГГГГ`\\."
+    
+    await update.message.reply_text(
+        text=text,
+        reply_markup=ReplyKeyboardMarkup([[config.BUTTON_ADMIN_BACK]], resize_keyboard=True),
+        parse_mode='MarkdownV2'
+    )
+    return config.LEAVE_GET_PERIOD
+
+async def admin_add_leave_get_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 4: Получает период, сохраняет данные и завершает."""
+    try:
+        start_date_str, end_date_str = update.message.text.split('-')
+        start_date = datetime.strptime(start_date_str.strip(), '%d.%m.%Y').date()
+        end_date = datetime.strptime(end_date_str.strip(), '%d.%m.%Y').date()
+        
+        if start_date > end_date:
+            await update.message.reply_text("Ошибка: Начальная дата не может быть позже конечной.")
+            return LEAVE_GET_PERIOD
+            
+    except (ValueError, IndexError):
+        await update.message.reply_text("Неверный формат. Введите период как `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`.")
+        return LEAVE_GET_PERIOD
+
+    emp_id = context.user_data['leave_employee_id']
+    emp_name = context.user_data['leave_employee_name']
+    leave_type = context.user_data['leave_type']
+    
+    await database.add_leave_period(emp_id, start_date, end_date, leave_type)
+    
+    await update.message.reply_text(
+        f"✅ Успешно! Для сотрудника {emp_name} назначен(а) {leave_type} с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}.",
+        reply_markup=admin_menu_keyboard()
+    )
+    context.user_data.clear()
+    return ADMIN_MENU
+
+async def admin_cancel_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 1: Просит переслать сообщение."""
+    await update.message.reply_text(
+        "Отмена отсутствия. Перешлите сообщение от сотрудника, для которого нужно отменить отпуск/больничный.",
+        reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
+    )
+    return CANCEL_LEAVE_GET_ID
+
+# handlers_admin.py
+
+async def admin_cancel_leave_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 2: Получает ID, просит ввести период."""
+    if not isinstance(update.message.forward_origin, MessageOriginUser):
+        await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
+        return config.CANCEL_LEAVE_GET_ID
+        
+    user_id = update.message.forward_origin.sender_user.id
+    employee = await database.get_employee_data(user_id, include_inactive=True)
+    if not employee:
+        await update.message.reply_text("Этот пользователь не найден в базе данных.")
+        return config.CANCEL_LEAVE_GET_ID
+    
+    context.user_data['cancel_leave_employee_id'] = user_id
+    context.user_data['cancel_leave_employee_name'] = employee['name']
+    
+    # --> ИЗМЕНЕНИЕ: Добавлено экранирование всех точек в строке
+    text_to_send = (
+        f"Выбран сотрудник: {employee['name']}\\.\n"
+        f"Введите период для отмены отсутствия в формате `ДД\\.ММ\\.ГГГГ-ДД\\.ММ\\.ГГГГ`\\."
+    )
+
+    await update.message.reply_text(
+        text=text_to_send,
+        reply_markup=ReplyKeyboardMarkup([[config.BUTTON_ADMIN_BACK]], resize_keyboard=True),
+        parse_mode='MarkdownV2'
+    )
+    return config.CANCEL_LEAVE_GET_PERIOD
+
+async def admin_cancel_leave_get_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Шаг 3: Получает период, удаляет данные и завершает."""
+    try:
+        start_date_str, end_date_str = update.message.text.split('-')
+        start_date = datetime.strptime(start_date_str.strip(), '%d.%m.%Y').date()
+        end_date = datetime.strptime(end_date_str.strip(), '%d.%m.%Y').date()
+        
+        if start_date > end_date:
+            await update.message.reply_text("Ошибка: Начальная дата не может быть позже конечной.")
+            return CANCEL_LEAVE_GET_PERIOD
+            
+    except (ValueError, IndexError):
+        await update.message.reply_text("Неверный формат. Введите период как `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`.")
+        return CANCEL_LEAVE_GET_PERIOD
+
+    emp_id = context.user_data['cancel_leave_employee_id']
+    emp_name = context.user_data['cancel_leave_employee_name']
+    
+    rows_deleted = await database.cancel_leave_period(emp_id, start_date, end_date)
+    
+    await update.message.reply_text(
+        f"✅ Успешно! Для сотрудника {emp_name} отменены все записи об отпусках/больничных с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}.\n"
+        f"(Затронуто записей: {rows_deleted})",
+        reply_markup=admin_menu_keyboard()
+    )
+    context.user_data.clear()
+    return ADMIN_MENU
 
 async def admin_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_back_to_menu из bot.py)

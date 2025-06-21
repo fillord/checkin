@@ -35,6 +35,17 @@ CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE = range(4)
 ) = range(4, 19)
 MONTHLY_CSV_GET_MONTH = 19
 AWAITING_LEAVE_REASON = 20
+AWAITING_LEAVE_REASON = 20
+(
+    LEAVE_GET_ID,
+    LEAVE_GET_TYPE,
+    LEAVE_GET_PERIOD
+) = range(21, 24)
+
+(
+    CANCEL_LEAVE_GET_ID,
+    CANCEL_LEAVE_GET_PERIOD
+) = range(24, 26) 
 
 # --- Тексты кнопок ---
 BUTTON_ARRIVAL = "✅ Приход"
@@ -53,6 +64,10 @@ BUTTON_REPORT_MONTHLY_CSV = "📅 Сводка за месяц в CSV"
 BUTTON_CONFIRM_DELETE = "Да, удалить"
 BUTTON_CANCEL_DELETE = "Нет, отмена"
 BUTTON_ASK_LEAVE = "🙏 Отпроситься"
+BUTTON_MANAGE_LEAVE = "🌴 Назначить отсутствие" 
+BUTTON_LEAVE_TYPE_VACATION = "Отпуск"        
+BUTTON_LEAVE_TYPE_SICK = "Больничный"
+BUTTON_CANCEL_LEAVE = "🚫 Отменить отсутствие" 
 
 # --- Другие константы ---
 LIVENESS_ACTIONS = ["улыбнитесь в камеру", "покажите на камеру большой палец 👍", "покажите на камеру знак 'мир' двумя пальцами ✌️"]
