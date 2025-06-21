@@ -5,7 +5,7 @@ import csv
 from datetime import datetime, date, timedelta
 from io import StringIO, BytesIO
 
-from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser
+from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 
 import database
@@ -151,6 +151,41 @@ async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFA
         )
         return MONTHLY_CSV_GET_MONTH
 
+async def handle_leave_request_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает решение администратора по запросу на уход."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        _, action, user_id_str = query.data.split(':')
+        user_id = int(user_id_str)
+    except (ValueError, IndexError):
+        await query.edit_message_text("Ошибка! Не удалось обработать запрос.")
+        return
+
+    employee_data = await database.get_employee_data(user_id)
+    if not employee_data:
+        await query.edit_message_text(f"Ошибка! Сотрудник с ID {user_id} не найден.")
+        return
+
+    original_text = query.message.text
+
+    if action == 'approve':
+        # Автоматически отмечаем уход
+        await database.log_check_in_attempt(user_id, 'SYSTEM_LEAVE', 'APPROVED_LEAVE')
+
+        await query.edit_message_text(text=f"{original_text}\n\n✅ *ВЫ РАЗРЕШИЛИ УХОД*", parse_mode='Markdown')
+        try:
+            await context.bot.send_message(chat_id=user_id, text="✅ Ваш запрос на уход одобрен. Ваш рабочий день завершен.")
+        except Exception as e:
+            logger.error(f"Не удалось уведомить сотрудника {user_id} об одобрении: {e}")
+
+    elif action == 'deny':
+        await query.edit_message_text(text=f"{original_text}\n\n❌ *ВЫ ОТКЛОНИЛИ ЗАПРОС*", parse_mode='Markdown')
+        try:
+            await context.bot.send_message(chat_id=user_id, text="❌ В вашем запросе на уход было отказано. Не забудьте отметиться в конце рабочего дня.")
+        except Exception as e:
+            logger.error(f"Не удалось уведомить сотрудника {user_id} об отказе: {e}")
 
 async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_add_start из bot.py)

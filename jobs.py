@@ -7,6 +7,7 @@ from database import get_all_active_employees_with_schedules, has_checked_in_tod
 from config import LOCAL_TIMEZONE, ADMIN_IDS, LIVENESS_ACTIONS # LIVENESS_ACTIONS - пример, если понадобится
 import re
 
+import database
 
 logger = logging.getLogger(__name__)
 
@@ -69,65 +70,119 @@ async def send_daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Формирование и отправка автоматического дневного отчета...")
     await send_report_for_period(datetime.now(LOCAL_TIMEZONE).date(), datetime.now(LOCAL_TIMEZONE).date(), context, "Ежедневный отчет", ADMIN_IDS)
 
+# jobs.py
 async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
-    # ... (скопируйте сюда содержимое функции check_and_send_notifications из bot.py)
-    logger.info("---[ЗАДАЧА]--- Запуск проверки уведомлений ---")
     now = datetime.now(LOCAL_TIMEZONE)
     today_str = now.date().isoformat()
 
+    # Инициализация и очистка данных
     if 'notifications_sent' not in context.bot_data:
         context.bot_data['notifications_sent'] = {}
+    if 'unhandled_late_users' not in context.bot_data:
+        context.bot_data['unhandled_late_users'] = set()
     if context.bot_data.get('last_cleanup_date') != today_str:
-        logger.info(f"---[ЗАДАЧА]--- Новый день ({today_str})! Очистка старых записей.")
         context.bot_data['notifications_sent'] = {}
+        context.bot_data['unhandled_late_users'] = set() # Очищаем и список опоздавших
         context.bot_data['last_cleanup_date'] = today_str
 
-    employees = await get_all_active_employees_with_schedules(now.weekday())
+    employees = await database.get_all_active_employees_with_schedules(now.weekday())
     if not employees:
         return
-        
-    logger.info(f"---[ЗАДАЧА]--- Найдено {len(employees)} сотрудников с расписанием на сегодня.")
 
     for emp_id, name, start_time_str in employees:
         try:
-            logger.info(f"---[ПРОВЕРКА]--- Сотрудник: {name} (ID: {emp_id}), график: '{start_time_str}'")
             start_time = time.fromisoformat(start_time_str)
             shift_start_datetime = datetime.combine(now.date(), start_time, tzinfo=LOCAL_TIMEZONE)
 
+            # --- Логика для напоминания (остается без изменений) ---
             warning_datetime = shift_start_datetime - timedelta(minutes=5)
-            missed_datetime = shift_start_datetime + timedelta(minutes=5, seconds=30)
-            
-            logger.info(f"    [ДЕТАЛИ] Текущее время (now)  : {now.isoformat()}")
-            logger.info(f"    [ДЕТАЛИ] Время предупреждения : {warning_datetime.isoformat()}")
-            logger.info(f"    [ДЕТАЛИ] Время опоздания      : {missed_datetime.isoformat()}")
-            
             warning_key = f"{emp_id}_warning_{today_str}"
-            missed_key = f"{emp_id}_missed_{today_str}"
-            
-            is_time_for_warning = now >= warning_datetime
-            is_warning_sent = context.bot_data['notifications_sent'].get(warning_key, False)
-            logger.info(f"    [УСЛОВИЕ WARNING] now >= warning_datetime? -> {is_time_for_warning}. sent? -> {is_warning_sent}")
-
-            is_time_for_missed = now >= missed_datetime
-            is_missed_sent = context.bot_data['notifications_sent'].get(missed_key, False)
-            logger.info(f"    [УСЛОВИЕ MISSED]  now >= missed_datetime?  -> {is_time_for_missed}. sent? -> {is_missed_sent}")
-            
-            if is_time_for_warning and not is_warning_sent:
-                has_checked_in = await has_checked_in_today(emp_id, "ARRIVAL")
-                logger.info(f"    -> Проверка чекина для ПРЕДУПРЕЖДЕНИЯ: {'ЕСТЬ' if has_checked_in else 'НЕТ'}")
-                if not has_checked_in:
+            if now >= warning_datetime and not context.bot_data['notifications_sent'].get(warning_key):
+                if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
                     await context.bot.send_message(chat_id=emp_id, text=f"🔔 Напоминание: ваш рабочий день скоро начнется. Пожалуйста, не забудьте отметиться.")
-                    logger.info(f"    -> ОТПРАВЛЕНО ПРЕДУПРЕЖДЕНИЕ для {name}.")
                 context.bot_data['notifications_sent'][warning_key] = True
 
-            if is_time_for_missed and not is_missed_sent:
-                has_checked_in = await has_checked_in_today(emp_id, "ARRIVAL")
-                logger.info(f"    -> Проверка чекина для ОПОЗДАНИЯ: {'ЕСТЬ' if has_checked_in else 'НЕТ'}")
-                if not has_checked_in:
-                    keyboard = [[InlineKeyboardButton("Отметиться с опозданием", callback_data="late_checkin")]]
-                    await context.bot.send_message(chat_id=emp_id, text="Вы пропустили время для чек-ина. Вы можете отметиться сейчас, но это будет зафиксировано как опоздание.", reply_markup=InlineKeyboardMarkup(keyboard))
-                    logger.info(f"    -> ОТПРАВЛЕНО уведомление об ОПОЗДАНИИ для {name}.")
+            # --- ИЗМЕНЕННАЯ Логика для уведомления об ОПОЗДАНИИ ---
+            missed_datetime = shift_start_datetime + timedelta(minutes=5, seconds=30)
+            missed_key = f"{emp_id}_missed_{today_str}"
+            if now >= missed_datetime and not context.bot_data['notifications_sent'].get(missed_key):
+                if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
+                    try:
+                        # Просто отправляем текст и добавляем юзера в "список опоздавших"
+                        await context.bot.send_message(chat_id=emp_id, text="Вы пропустили время для чек-ина. Пожалуйста, нажмите '✅ Приход', чтобы отметиться с опозданием.")
+                        context.bot_data['unhandled_late_users'].add(emp_id)
+                        logger.info(f"Сотрудник {name} (ID: {emp_id}) помечен как опоздавший.")
+                    except Exception as e:
+                        logger.error(f"ОШИБКА отправки уведомления об опоздании для {name}: {e}")
                 context.bot_data['notifications_sent'][missed_key] = True
-        
         except Exception as e:
-            logger.error(f"---[КРИТИЧЕСКАЯ ОШИБКА]--- в цикле для сотрудника {name} (ID: {emp_id}): {e}", exc_info=True)
+            logger.error(f"Критическая ошибка в цикле уведомлений для сотрудника {name} (ID: {emp_id}): {e}", exc_info=True)
+
+async def send_departure_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Напоминает сотрудникам отметить уход через 15 минут после окончания ИХ смены.
+    """
+    now = datetime.now(LOCAL_TIMEZONE)
+    today_str = now.date().isoformat()
+    logger.info("---[ЗАДАЧА]--- Запуск проверки напоминаний об уходе ---")
+
+    # Получаем всех, кто должен был работать сегодня
+    employees = await database.get_all_active_employees_with_schedules(now.weekday())
+
+    for emp_id, name, _ in employees:
+        try:
+            # Получаем полное расписание сотрудника на сегодня, включая время ухода
+            schedule = await database.get_employee_today_schedule(emp_id)
+            if not schedule or not schedule.get('end_time'):
+                continue  # Пропускаем, если нет графика или времени ухода на сегодня
+
+            # 1. Вычисляем персональное время напоминания
+            shift_end_datetime = datetime.combine(now.date(), schedule['end_time'], tzinfo=LOCAL_TIMEZONE)
+            reminder_datetime = shift_end_datetime + timedelta(minutes=15)
+
+            # 2. Проверяем, наступило ли время напомнить именно этому сотруднику
+            if now < reminder_datetime:
+                continue # Еще рано, переходим к следующему сотруднику
+
+            # 3. Проверяем, не отправляли ли мы ему уже напоминание сегодня
+            reminder_key = f"{emp_id}_departure_reminder_{today_str}"
+            if context.bot_data.get('notifications_sent', {}).get(reminder_key):
+                continue # Уже напоминали, переходим к следующему
+
+            # 4. Проверяем, отметил ли сотрудник приход и уход
+            has_arrived = await database.has_checked_in_today(emp_id, "ARRIVAL")
+            has_departed = await database.has_checked_in_today(emp_id, "DEPARTURE")
+
+            # 5. Если он пришел, но еще не ушел - отправляем напоминание
+            if has_arrived and not has_departed:
+                await context.bot.send_message(
+                    chat_id=emp_id,
+                    text="👋 Не забудьте отметить уход! Это необходимо сделать до 23:00, иначе день будет отмечен как прогул."
+                )
+                logger.info(f"Отправлено напоминание об уходе сотруднику {name} (ID: {emp_id})")
+
+            # 6. В любом случае помечаем, что мы его проверили, чтобы не спамить
+            context.bot_data.setdefault('notifications_sent', {})[reminder_key] = True
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле напоминаний об уходе для {emp_id}: {e}", exc_info=True)
+
+
+async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
+    """Применяет штраф за неотмеченный уход."""
+    now = datetime.now(LOCAL_TIMEZONE)
+    yesterday = now.date() - timedelta(days=1) # Задача запускается после полуночи за вчерашний день
+    logger.info(f"---[ЗАДАЧА]--- Применение штрафов за неотмеченный уход за {yesterday.isoformat()} ---")
+
+    employees = await database.get_all_active_employees_with_schedules(yesterday.weekday())
+
+    for emp_id, name, _ in employees:
+        try:
+            # Проверяем чекины именно за вчерашний день
+            has_arrived = await database.has_checked_in_on_date(emp_id, "ARRIVAL", yesterday)
+            has_departed = await database.has_checked_in_on_date(emp_id, "DEPARTURE", yesterday)
+
+            if has_arrived and not has_departed:
+                await database.override_as_absent(emp_id, yesterday)
+        except Exception as e:
+            logger.error(f"Ошибка в цикле применения штрафов для {emp_id}: {e}", exc_info=True)

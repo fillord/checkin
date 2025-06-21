@@ -21,7 +21,8 @@ from app_context import shutdown_executor
 from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
-    register_face, awaiting_photo, awaiting_location, employee_cancel_command
+    register_face, awaiting_photo, awaiting_location, employee_cancel_command,
+    handle_late_checkin, ask_leave_start, ask_leave_get_reason
 )
 from handlers_admin import (
     admin_command, admin_reports_menu, admin_get_today_report, admin_get_yesterday_report,
@@ -29,7 +30,7 @@ from handlers_admin import (
     admin_export_csv, admin_monthly_csv_start, admin_monthly_csv_get_month,
     admin_add_start, add_get_id, add_get_name, admin_modify_start, modify_get_id,
     admin_delete_start, delete_get_id, delete_confirm, schedule_handler_factory,
-    admin_back_to_menu
+    admin_back_to_menu, handle_leave_request_decision
 )
 
 # Настройка логирования
@@ -50,10 +51,16 @@ async def main() -> None:
         checkin_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start_command),
-                CallbackQueryHandler(late_checkin_callback, pattern="^late_checkin$")
+                # УДАЛЯЕМ СТАРУЮ ТОЧКУ ВХОДА ДЛЯ ИНЛАЙН-КНОПКИ
+                # CallbackQueryHandler(late_checkin_callback, pattern="^late_checkin$")
+                MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start) 
             ],
             states={
-                config.CHOOSE_ACTION: [MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival), MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure)],
+                config.CHOOSE_ACTION: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival), 
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure)
+                ],
+                config.AWAITING_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)],
                 config.REGISTER_FACE: [MessageHandler(filters.PHOTO, register_face)],
                 config.AWAITING_PHOTO: [MessageHandler(filters.PHOTO, awaiting_photo)],
                 config.AWAITING_LOCATION: [MessageHandler(filters.LOCATION, awaiting_location)],
@@ -105,10 +112,17 @@ async def main() -> None:
         application.add_handler(admin_conv_handler)
         application.add_handler(checkin_conv_handler)
         
+        # Добавляем отдельный обработчик для решения админа по уходу
+        application.add_handler(CallbackQueryHandler(handle_leave_request_decision, pattern="^leave:"))
+
         scheduler = AsyncIOScheduler(timezone=config.LOCAL_TIMEZONE)
         scheduler.add_job(jobs.check_and_send_notifications, 'interval', minutes=1, args=[application])
         scheduler.add_job(jobs.send_daily_report_job, 'cron', hour=21, minute=0, args=[application])
         
+        # Запускаем проверку каждые 15 минут в течение всего дня, чтобы охватить любой график
+        scheduler.add_job(jobs.send_departure_reminders, 'cron', hour='*', minute='*/5', args=[application])
+        scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application]) # Применяем штраф в 00:05 за вчерашний день
+    
         async with application:
             await database.init_db()
             await application.initialize()

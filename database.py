@@ -86,6 +86,13 @@ async def get_employee_today_schedule(telegram_id: int) -> dict | None:
         if row: return {"name": row[0], "start_time": time.fromisoformat(row[1]), "end_time": time.fromisoformat(row[2])}
     return None
 
+async def has_checked_in_on_date(telegram_id: int, check_in_type: str, for_date: date) -> bool:
+    """Проверяет наличие чекина за конкретную дату."""
+    start_of_day_local = datetime.combine(for_date, time.min, tzinfo=LOCAL_TIMEZONE)
+    end_of_day_local = datetime.combine(for_date, time.max, tzinfo=LOCAL_TIMEZONE)
+    start_of_day_utc = start_of_day_local.astimezone(ZoneInfo("UTC"))
+    end_of_day_utc = end_of_day_local.astimezone(ZoneInfo("UTC"))
+
 async def has_checked_in_today(telegram_id: int, check_in_type: str) -> bool:
     # ... (скопируйте сюда содержимое функции has_checked_in_today из bot.py)
     today_local = datetime.now(LOCAL_TIMEZONE).date()
@@ -111,6 +118,38 @@ async def has_checked_in_today(telegram_id: int, check_in_type: str) -> bool:
             telegram_id, 
             check_in_type, 
             *statuses_to_check, 
+            start_of_day_utc.strftime('%Y-%m-%d %H:%M:%S'), 
+            end_of_day_utc.strftime('%Y-%m-%d %H:%M:%S')
+        )
+        cursor = await db.execute(query, params)
+        return await cursor.fetchone() is not None
+
+async def is_day_finished_for_user(telegram_id: int) -> bool:
+    """
+    Проверяет, завершен ли рабочий день для сотрудника (был уход или системная отметка).
+    """
+    today_local = datetime.now(LOCAL_TIMEZONE).date()
+    start_of_day_local = datetime.combine(today_local, time.min, tzinfo=LOCAL_TIMEZONE)
+    end_of_day_local = datetime.combine(today_local, time.max, tzinfo=LOCAL_TIMEZONE)
+
+    start_of_day_utc = start_of_day_local.astimezone(ZoneInfo("UTC"))
+    end_of_day_utc = end_of_day_local.astimezone(ZoneInfo("UTC"))
+    
+    # Ищем либо успешный уход, либо одобренный системный уход
+    statuses_to_check = ('SUCCESS', 'APPROVED_LEAVE')
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        query = f"""
+            SELECT 1 FROM check_ins 
+            WHERE employee_telegram_id = ? 
+              AND (check_in_type = 'DEPARTURE' OR check_in_type = 'SYSTEM_LEAVE')
+              AND status IN ({','.join('?'*len(statuses_to_check))})
+              AND timestamp BETWEEN ? AND ?
+            LIMIT 1
+        """
+        params = (
+            telegram_id, 
+            *statuses_to_check,
             start_of_day_utc.strftime('%Y-%m-%d %H:%M:%S'), 
             end_of_day_utc.strftime('%Y-%m-%d %H:%M:%S')
         )
@@ -153,16 +192,22 @@ async def log_check_in_attempt(telegram_id: int, check_in_type: str, status: str
                          (timestamp_utc, telegram_id, check_in_type, status, lat, lon, distance, similarity))
         await db.commit()
 
-async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
-    # ... (скопируйте сюда содержимое функции get_report_stats_for_period из bot.py)
-    stats = {
-        'total_work_days': 0, 
-        'total_arrivals': 0, 
-        'total_lates': 0, 
-        'absences': defaultdict(list),
-        'late_employees': defaultdict(list)
-    }
+async def override_as_absent(telegram_id: int, for_date: date):
+    """Вставляет в БД системную запись о прогуле из-за отсутствия чекина ухода."""
+    # Время в UTC, соответствующее концу дня по локальному времени
+    end_of_day_local = datetime.combine(for_date, time(23, 59, 59), tzinfo=LOCAL_TIMEZONE)
+    timestamp_utc = end_of_day_local.astimezone(ZoneInfo("UTC")).strftime('%Y-%m-%d %H:%M:%S')
 
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status) VALUES (?, ?, ?, ?)",
+            (timestamp_utc, telegram_id, 'SYSTEM', 'ABSENT_INCOMPLETE')
+        )
+        await db.commit()
+        logger.info(f"Сотрудник {telegram_id} помечен как прогульщик (не отметил уход) за {for_date.isoformat()}")
+
+async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
+    stats = {'total_work_days': 0, 'total_arrivals': 0, 'total_lates': 0, 'absences': defaultdict(list), 'late_employees': defaultdict(list)}
     start_dt_local = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE)
     end_dt_local = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE)
     start_dt_utc = start_dt_local.astimezone(ZoneInfo("UTC"))
@@ -171,45 +216,45 @@ async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor_employees = await db.execute("SELECT telegram_id, full_name FROM employees WHERE is_active = TRUE")
         all_employees = {row[0]: row[1] for row in await cursor_employees.fetchall()}
-
         cursor_schedules = await db.execute("SELECT employee_telegram_id, day_of_week FROM schedules")
         schedules = defaultdict(set)
-        for emp_id, day in await cursor_schedules.fetchall():
-            schedules[emp_id].add(day)
+        for emp_id, day in await cursor_schedules.fetchall(): schedules[emp_id].add(day)
 
-        query = """
-            SELECT employee_telegram_id, timestamp, status 
-            FROM check_ins 
-            WHERE check_in_type = 'ARRIVAL' 
-              AND timestamp BETWEEN ? AND ?
-        """
+        # Получаем все чекины и системные отметки
+        query = "SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE timestamp BETWEEN ? AND ?"
         params = (start_dt_utc.strftime('%Y-%m-%d %H:%M:%S'), end_dt_utc.strftime('%Y-%m-%d %H:%M:%S'))
-        cursor_arrivals = await db.execute(query, params)
-        
-        arrivals_by_date = defaultdict(dict)
-        for emp_id, ts_str, status in await cursor_arrivals.fetchall():
+        cursor_events = await db.execute(query, params)
+
+        # --> ИЗМЕНЕНИЕ: Структура для хранения статуса по дням
+        events_by_date = defaultdict(dict)
+        for emp_id, ts_str, status in await cursor_events.fetchall():
             utc_dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').replace(tzinfo=ZoneInfo("UTC"))
-            local_date_str = utc_dt.astimezone(LOCAL_TIMEZONE).date().isoformat()
-            arrivals_by_date[local_date_str][emp_id] = status
+            local_date = utc_dt.astimezone(LOCAL_TIMEZONE).date()
+
+            # Системная отметка о прогуле имеет наивысший приоритет
+            if status == 'ABSENT_INCOMPLETE':
+                events_by_date[local_date][emp_id] = 'ABSENT_INCOMPLETE'
+            # Остальные статусы записываем, только если нет более важного
+            elif emp_id not in events_by_date[local_date]:
+                events_by_date[local_date][emp_id] = status
 
         for current_date in (start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)):
             weekday = current_date.weekday()
-            date_str = current_date.isoformat()
-            
             for emp_id, name in all_employees.items():
                 if weekday in schedules.get(emp_id, set()):
                     stats['total_work_days'] += 1
-                    
-                    if emp_id in arrivals_by_date.get(date_str, {}):
-                        stats['total_arrivals'] += 1
-                        if arrivals_by_date[date_str][emp_id] == 'LATE':
-                            stats['total_lates'] += 1
-                            stats['late_employees'][name].append(current_date.strftime('%d.%m'))
-                    else:
-                        if current_date <= datetime.now(LOCAL_TIMEZONE).date():
-                            stats['absences'][name].append(current_date.strftime('%d.%m'))
-    return stats
+                    status = events_by_date.get(current_date, {}).get(emp_id)
 
+                    if status == 'ABSENT_INCOMPLETE' or status is None:
+                         if current_date <= datetime.now(LOCAL_TIMEZONE).date():
+                            stats['absences'][name].append(current_date.strftime('%d.%m'))
+                    elif status == 'LATE':
+                        stats['total_arrivals'] += 1
+                        stats['total_lates'] += 1
+                        stats['late_employees'][name].append(current_date.strftime('%d.%m'))
+                    elif status == 'SUCCESS':
+                        stats['total_arrivals'] += 1
+    return stats
 
 async def get_all_checkins_for_export() -> list:
     # ... (скопируйте сюда содержимое функции get_all_checkins_for_export из bot.py)
@@ -272,22 +317,25 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         # Проходим по каждому дню месяца
         for day in range(1, num_days + 1):
             current_date = date(year, month, day)
-            current_date_str = current_date.isoformat()
+            current_date_iso = current_date.isoformat()
             weekday = current_date.weekday()
             
             status_str = "Выходной" # Статус по умолчанию
 
             # Если день рабочий по графику
             if weekday in schedules.get(emp_id, set()):
-                # Проверяем, был ли чекин в этот день
-                checkin_status = checkins.get(emp_id, {}).get(current_date_str)
-                if checkin_status:
-                    if checkin_status == 'LATE':
-                        status_str = 'Опоздал'
-                    elif checkin_status == 'SUCCESS':
-                        status_str = 'Вовремя'
-                else:
-                    # Если чекина не было, но день уже прошел или сегодня
+                # --> ИЗМЕНЕНИЕ: Логика определения статуса дня
+                checkin_status = checkins.get(emp_id, {}).get(current_date_iso)
+                
+                if checkin_status == 'ABSENT_INCOMPLETE':
+                    status_str = 'Прогул (нет ухода)'
+                elif checkin_status == 'APPROVED_LEAVE': # <-- НОВЫЙ СТАТУС
+                    status_str = 'Отпросился'
+                elif checkin_status == 'LATE':
+                    status_str = 'Опоздал'
+                elif checkin_status == 'SUCCESS':
+                    status_str = 'Вовремя'
+                else: # Если чекина не было (status is None)
                     if current_date <= datetime.now(LOCAL_TIMEZONE).date():
                         status_str = 'Пропустил'
                     else: # Для будущих рабочих дней
