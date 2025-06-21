@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 import aiosqlite
 from pydantic import BaseModel
 from typing import List
-from database import get_monthly_summary_data
+from database import get_monthly_summary_data, set_employee_active_status
 # Импортируем наши настройки
 import config
 
@@ -46,7 +46,7 @@ async def get_monthly_report(year: int, month: int):
     try:
         # Используем нашу существующую функцию из database.py
         report_data = await get_monthly_summary_data(year, month)
-        if not report_data or len(report_data) <= 1: # Проверяем, есть ли данные кроме заголовка
+        if not report_data or len(report_data) <= 1:
             raise HTTPException(status_code=404, detail="Нет данных за указанный период")
 
         # Возвращаем данные в формате JSON
@@ -61,7 +61,22 @@ async def read_root():
     """Отдает главную HTML страницу нашего веб-интерфейса."""
     return FileResponse('index.html')
 
+class DeactivateRequest(BaseModel):
+    id: int
 
+@app.post("/api/employees/deactivate")
+async def deactivate_employee(request: DeactivateRequest):
+    """
+    Деактивирует сотрудника по его ID.
+    """
+    try:
+        # Вызываем нашу существующую функцию из database.py
+        await set_employee_active_status(request.id, is_active=False)
+        logger.info(f"Сотрудник с ID {request.id} был деактивирован через веб-интерфейс.")
+        return {"status": "success", "message": f"Employee {request.id} deactivated."}
+    except Exception as e:
+        logger.error(f"Ошибка при деактивации сотрудника {request.id} через API: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка на сервере при деактивации сотрудника.")
 # В будущем сюда можно добавлять другие эндпоинты:
 # @app.get("/api/schedules/{employee_id}")
 # @app.get("/api/reports/monthly/{year}/{month}")

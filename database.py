@@ -77,6 +77,17 @@ async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | 
             return {"id": row[0], "name": row[1], "face_encoding": row[2], "is_active": row[3] == 1}
     return None
 
+async def is_employee_active(telegram_id: int) -> bool:
+    """Проверяет, активен ли сотрудник в базе данных."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT is_active FROM employees WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        row = await cursor.fetchone()
+        # Возвращает True, если пользователь найден и его статус is_active = 1
+        return row[0] if row else False
+    
 @alru_cache(maxsize=128)
 async def get_all_active_employees_with_schedules(for_date: date) -> list:
     """Получает список активных сотрудников и их АКТУАЛЬНЫЙ на for_date график."""

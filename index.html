@@ -6,10 +6,20 @@
     <title>Админ-панель</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
-        /* Добавим немного стилей для наглядности отчета */
         .status-late { background-color: #a66a00; }
         .status-absent { background-color: #b82525; }
         .status-leave { background-color: #3e65a3; }
+        #report-container { overflow-x: auto; }
+        .delete-btn { 
+            --pico-font-size: 0.8em; 
+            --pico-padding: 0.2em 0.5em;
+            background-color: var(--pico-color-red-500);
+            border-color: var(--pico-color-red-550);
+        }
+        .delete-btn:hover {
+            background-color: var(--pico-color-red-600);
+            border-color: var(--pico-color-red-650);
+        }
     </style>
 </head>
 <body>
@@ -17,10 +27,18 @@
         <header>
             <h1>Админ-панель бота</h1>
         </header>
+
+        <details open>
+            <summary><strong>Список сотрудников</strong></summary>
+            <div id="loading-employees" aria-busy="true">Загрузка данных...</div>
+            <table id="employees-table" style="display: none;">
+                <thead><tr><th>ID</th><th>ФИО</th><th>Действия</th></tr></thead>
+                <tbody id="employees-tbody"></tbody>
+            </table>
+        </details>
         
-        <article>
-            <header><strong>Сводный отчет за месяц</strong></header>
-            
+        <details open> 
+            <summary><strong>Сводный отчет за месяц</strong></summary>
             <form id="report-form">
                 <div class="grid">
                     <select id="month-select" required></select>
@@ -29,102 +47,182 @@
                 </div>
             </form>
             
-            <div id="report-container" style="margin-top: 1rem; overflow-x: auto;">
+            <div id="report-container" style="margin-top: 1rem;">
                 <div id="report-loading" aria-busy="true" style="display: none;">Формирование отчета...</div>
                 <div id="report-error" style="color: var(--pico-color-red); display: none;"></div>
                 <table id="report-table"></table>
             </div>
-        </article>
+        </details>
         
     </main>
 
     <script>
-        // --- Заполнение формы выбора даты ---
-        const monthSelect = document.getElementById('month-select');
-        const yearSelect = document.getElementById('year-select');
-        const months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
-        const currentYear = new Date().getFullYear();
-        const currentMonth = new Date().getMonth();
+        // --- ОБЩАЯ ЛОГИКА ---
+        document.addEventListener('DOMContentLoaded', () => {
+            loadEmployees();
+            setupDateSelector();
+            document.getElementById('report-form').addEventListener('submit', handleReportFormSubmit);
+            document.getElementById('employees-tbody').addEventListener('click', handleEmployeeAction);
+        });
 
-        for (let i = 0; i < 12; i++) {
-            const option = new Option(months[i], i + 1);
-            if (i === currentMonth) option.selected = true;
-            monthSelect.add(option);
+        // --- ЛОГИКА ДЛЯ СПИСКА СОТРУДНИКОВ ---
+        function loadEmployees() {
+            const loadingDiv = document.getElementById('loading-employees');
+            const table = document.getElementById('employees-table');
+            const tbody = document.getElementById('employees-tbody');
+
+            loadingDiv.style.display = 'block';
+            table.style.display = 'none';
+
+            fetch('/api/employees')
+                .then(response => response.json())
+                .then(data => {
+                    loadingDiv.style.display = 'none';
+                    table.style.display = 'table';
+                    tbody.innerHTML = '';
+                    data.forEach(employee => {
+                        const row = document.createElement('tr');
+                        row.dataset.employeeId = employee.id;
+                        row.innerHTML = `
+                            <td>${employee.id}</td>
+                            <td>${employee.full_name}</td>
+                            <td>
+                                <button class="delete-btn" data-action="deactivate" data-id="${employee.id}">
+                                    Удалить
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    loadingDiv.textContent = 'Ошибка загрузки сотрудников!';
+                    console.error('Error fetching employees:', error);
+                });
+        }
+        
+        // ИСПРАВЛЕНИЕ: Полностью переписана функция для корректной работы
+        function handleEmployeeAction(event) {
+            const targetButton = event.target.closest('button');
+            if (!targetButton || targetButton.dataset.action !== 'deactivate') {
+                return;
+            }
+
+            const employeeId = targetButton.dataset.id;
+            const employeeRow = targetButton.closest('tr');
+            const employeeName = employeeRow.cells[1].textContent;
+
+            if (confirm(`Вы уверены, что хотите деактивировать сотрудника ${employeeName}?`)) {
+                targetButton.setAttribute('aria-busy', 'true');
+                targetButton.disabled = true;
+
+                fetch('/api/employees/deactivate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: parseInt(employeeId) })
+                })
+                .then(response => {
+                    if (!response.ok) throw new Error('Ошибка сервера при деактивации');
+                    return response.json();
+                })
+                .then(result => {
+                    if (result.status === 'success') {
+                        // Просто перезагружаем список сотрудников, чтобы он был актуальным
+                        loadEmployees(); 
+                    } else {
+                        throw new Error(result.message || 'Неизвестная ошибка');
+                    }
+                })
+                .catch(error => {
+                    alert(`Не удалось деактивировать сотрудника: ${error.message}`);
+                    targetButton.removeAttribute('aria-busy');
+                    targetButton.disabled = false;
+                });
+            }
+        }
+        
+        // --- ЛОГИКА ДЛЯ ОТЧЕТА (без изменений) ---
+        function setupDateSelector() {
+            const monthSelect = document.getElementById('month-select');
+            const yearSelect = document.getElementById('year-select');
+            const months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+            const currentYear = new Date().getFullYear();
+            const currentMonth = new Date().getMonth();
+
+            months.forEach((monthName, index) => {
+                const option = new Option(monthName, index + 1);
+                if (index === currentMonth) option.selected = true;
+                monthSelect.add(option);
+            });
+
+            for (let i = currentYear; i >= currentYear - 2; i--) {
+                yearSelect.add(new Option(i, i));
+            }
         }
 
-        for (let i = currentYear; i >= currentYear - 2; i--) {
-            yearSelect.add(new Option(i, i));
-        }
-
-        // --- Обработка отправки формы ---
-        document.getElementById('report-form').addEventListener('submit', event => {
-            event.preventDefault(); // Предотвращаем стандартную отправку формы
-            
-            const year = yearSelect.value;
-            const month = monthSelect.value;
+        function handleReportFormSubmit(event) {
+            event.preventDefault();
+            const year = document.getElementById('year-select').value;
+            const month = document.getElementById('month-select').value;
             
             const loadingDiv = document.getElementById('report-loading');
             const errorDiv = document.getElementById('report-error');
             const table = document.getElementById('report-table');
 
-            // Показываем загрузку, прячем старые данные и ошибки
             loadingDiv.style.display = 'block';
             errorDiv.style.display = 'none';
             table.innerHTML = '';
 
-            // Делаем запрос к нашему новому API
             fetch(`/api/reports/monthly/${year}/${month}`)
                 .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`Ошибка сети или сервера: ${response.statusText}`);
-                    }
+                    if (!response.ok) return response.json().then(err => { throw new Error(err.detail) });
                     return response.json();
                 })
                 .then(result => {
                     loadingDiv.style.display = 'none';
-                    const reportData = result.data;
-                    
-                    // --- Рендеринг таблицы ---
-                    const thead = document.createElement('thead');
-                    const tbody = document.createElement('tbody');
-                    
-                    // Создаем заголовок таблицы
-                    const headerRow = document.createElement('tr');
-                    reportData[0].forEach(headerText => {
-                        const th = document.createElement('th');
-                        th.textContent = headerText;
-                        headerRow.appendChild(th);
-                    });
-                    thead.appendChild(headerRow);
-
-                    // Создаем строки с данными
-                    reportData.slice(1).forEach(rowData => {
-                        const row = document.createElement('tr');
-                        rowData.forEach((cellData, index) => {
-                            const cell = document.createElement('td');
-                            cell.textContent = cellData;
-                            
-                            // Раскрашиваем ячейки в зависимости от статуса
-                            if (index > 0) { // Не красим имя сотрудника
-                                if (cellData.includes('Опоздал')) cell.className = 'status-late';
-                                if (cellData.includes('Прогул') || cellData.includes('Пропустил')) cell.className = 'status-absent';
-                                if (cellData.includes('Отпуск') || cellData.includes('Больничный')) cell.className = 'status-leave';
-                            }
-                            row.appendChild(cell);
-                        });
-                        tbody.appendChild(row);
-                    });
-
-                    table.appendChild(thead);
-                    table.appendChild(tbody);
+                    renderReportTable(result.data);
                 })
                 .catch(error => {
                     loadingDiv.style.display = 'none';
-                    errorDiv.textContent = 'Не удалось загрузить отчет. Возможно, за этот период нет данных.';
+                    errorDiv.textContent = `Не удалось загрузить отчет: ${error.message}`;
                     errorDiv.style.display = 'block';
                     console.error('Error fetching report:', error);
                 });
-        });
+        }
+
+        function renderReportTable(reportData) {
+            const table = document.getElementById('report-table');
+            const thead = document.createElement('thead');
+            const tbody = document.createElement('tbody');
+            
+            const headerRow = document.createElement('tr');
+            reportData[0].forEach(headerText => {
+                const th = document.createElement('th');
+                th.textContent = headerText;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+
+            reportData.slice(1).forEach(rowData => {
+                const row = document.createElement('tr');
+                rowData.forEach((cellData, index) => {
+                    const cell = document.createElement('td');
+                    cell.textContent = cellData;
+                    
+                    if (index > 0) {
+                        const status = cellData.toLowerCase();
+                        if (status.includes('опоздал')) cell.className = 'status-late';
+                        else if (status.includes('прогул') || status.includes('пропустил')) cell.className = 'status-absent';
+                        else if (status.includes('отпуск') || status.includes('больничный') || status.includes('отпросился')) cell.className = 'status-leave';
+                    }
+                    row.appendChild(cell);
+                });
+                tbody.appendChild(row);
+            });
+
+            table.appendChild(thead);
+            table.appendChild(tbody);
+        }
     </script>
 </body>
 </html>

@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from geopy.distance import geodesic
 import database
 from database import is_day_finished_for_user
-
+from decorators import check_active_employee
 from keyboards import main_menu_keyboard
 from config import (
     CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE, LIVENESS_ACTIONS,
@@ -108,7 +108,7 @@ async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text("Отлично! Ваше лицо зарегистрировано.", reply_markup=main_menu_keyboard())
     return CHOOSE_ACTION
 
-
+@check_active_employee
 async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Приход' для своевременных и опоздавших сотрудников."""
     user = update.effective_user
@@ -142,6 +142,7 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
     return AWAITING_PHOTO
 
+
 async def handle_late_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Отметиться с опозданием'."""
     action = random.choice(LIVENESS_ACTIONS)
@@ -153,6 +154,7 @@ async def handle_late_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     return AWAITING_PHOTO
 
+@check_active_employee
 async def ask_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начинает процесс запроса на уход."""
     user_id = update.effective_user.id
@@ -169,6 +171,7 @@ async def ask_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("Пожалуйста, укажите причину, по которой вы хотите уйти раньше.", reply_markup=ReplyKeyboardRemove())
     return AWAITING_LEAVE_REASON
 
+@check_active_employee
 async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает причину, отправляет запрос админу и возвращает в главное меню."""
     user = update.effective_user
@@ -202,6 +205,7 @@ async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYP
     # --> КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Возвращаем в главное состояние, а не завершаем диалог
     return CHOOSE_ACTION
 
+@check_active_employee
 async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
 
@@ -228,6 +232,7 @@ async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(f"Для подтверждения ухода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
     return AWAITING_PHOTO
 
+@check_active_employee
 async def awaiting_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции awaiting_photo из bot.py)
     context.user_data['photo_file_id'] = update.message.photo[-1].file_id
@@ -237,7 +242,7 @@ async def awaiting_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # handlers_user.py
-
+@check_active_employee
 async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user, user_location = update.effective_user, update.message.location
     photo_file_id = context.user_data.get('photo_file_id')
