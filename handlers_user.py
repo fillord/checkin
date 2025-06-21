@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, date, time, timedelta
 from io import BytesIO
 from concurrent.futures import ProcessPoolExecutor
-
+from app_context import process_pool_executor
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from geopy.distance import geodesic
@@ -59,7 +59,7 @@ async def verify_face(user_id: int, new_photo_file_id: str, context: ContextType
     image_bytes = photo_stream.getvalue()
 
     loop = asyncio.get_running_loop()
-    executor = context.bot_data['process_pool']
+    executor = process_pool_executor
 
     similarity_score, is_match = await loop.run_in_executor(
         executor, _face_verification_worker, image_bytes, known_encoding_bytes
@@ -92,7 +92,7 @@ async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text("Спасибо. Обрабатываю фото (это может занять несколько секунд)...")
 
     loop = asyncio.get_running_loop()
-    executor = context.bot_data['process_pool']
+    executor = process_pool_executor
 
     encoding = await loop.run_in_executor(
         executor, _face_recognition_worker, image_bytes

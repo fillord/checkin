@@ -11,12 +11,13 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from concurrent.futures import ProcessPoolExecutor # <-- ДОБАВЛЕН ИМПОРТ
+# concurrent.futures.ProcessPoolExecutor больше не нужен здесь напрямую
 
 # Импортируем наши модули
 import config
 import database
 import jobs
+from app_context import process_pool_executor # <-- ИЗМЕНЕНИЕ
 from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
@@ -39,24 +40,13 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Основная функция для запуска бота."""
-
-    # --> ИЗМЕНЕНИЕ: Создаем пул процессов, который будет выполнять тяжелые задачи
-    process_pool_executor = ProcessPoolExecutor()
-
-    # --> ИЗМЕНЕНИЕ: Добавляем блок try...finally для гарантированного закрытия пула
+    
+    # Блок try...finally для гарантированного закрытия пула
     try:
-        # Инициализация сохранения состояний
         persistence = PicklePersistence(filepath=config.PERSISTENCE_FILE)
-        
-        # Создание приложения
         application = Application.builder().token(config.BOT_TOKEN).persistence(persistence).build()
-
-        # --> ИЗМЕНЕНИЕ: Сохраняем пул в контекст бота, чтобы он был доступен во всех хендлерах
-        application.bot_data['process_pool'] = process_pool_executor
         
-        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
-
-        # Диалог для обычных сотрудников
+        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ (без изменений) ---
         checkin_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start_command),
@@ -72,7 +62,6 @@ async def main() -> None:
             allow_reentry=True, name="checkin_conversation", persistent=True,
         )
         
-        # Диалог для администратора
         schedule_handlers = [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_handler_factory(i)) for i in range(7)]
         admin_conv_handler = ConversationHandler(
             entry_points=[CommandHandler("admin", admin_command)],
@@ -116,12 +105,10 @@ async def main() -> None:
         application.add_handler(admin_conv_handler)
         application.add_handler(checkin_conv_handler)
         
-        # Настройка и запуск планировщика
         scheduler = AsyncIOScheduler(timezone=config.LOCAL_TIMEZONE)
         scheduler.add_job(jobs.check_and_send_notifications, 'interval', minutes=1, args=[application])
         scheduler.add_job(jobs.send_daily_report_job, 'cron', hour=21, minute=0, args=[application])
         
-        # Запуск бота
         async with application:
             await database.init_db()
             await application.initialize()
@@ -132,10 +119,8 @@ async def main() -> None:
             await asyncio.Event().wait()
             
     finally:
-        # --> ИЗМЕНЕНИЕ: Гарантируем закрытие пула при любой остановке бота
         logger.info("Закрытие пула процессов...")
         process_pool_executor.shutdown()
-
 
 if __name__ == "__main__":
     try:
