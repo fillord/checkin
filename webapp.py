@@ -1,6 +1,11 @@
 # webapp.py
 import logging
-from fastapi import FastAPI, HTTPException 
+
+import hmac
+import hashlib
+import urllib.parse
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 import aiosqlite
 from pydantic import BaseModel
@@ -77,6 +82,49 @@ async def deactivate_employee(request: DeactivateRequest):
     except Exception as e:
         logger.error(f"Ошибка при деактивации сотрудника {request.id} через API: {e}")
         raise HTTPException(status_code=500, detail="Ошибка на сервере при деактивации сотрудника.")
+    
+class AuthRequest(BaseModel):
+    initData: str
+
+
+@app.post("/api/validate_user")
+async def validate_user(request: AuthRequest):
+    """Проверяет подлинность данных, полученных от Telegram Web App."""
+    init_data = request.initData
+
+    # Пытаемся извлечь хэш из данных
+    try:
+        parsed_data = dict(urllib.parse.parse_qsl(init_data))
+        hash_from_telegram = parsed_data.pop('hash', '')
+        if not hash_from_telegram:
+            raise ValueError("Хэш отсутствует в initData")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Некорректные данные initData")
+
+    # Формируем строку для проверки хэша
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+
+    # Генерируем секретный ключ из токена бота
+    secret_key = hmac.new("WebAppData".encode(), config.BOT_TOKEN.encode(), hashlib.sha256).digest()
+
+    # Считаем наш хэш
+    calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+    # Сравниваем хэши
+    if calculated_hash != hash_from_telegram:
+        raise HTTPException(status_code=403, detail="Проверка данных не пройдена. Попытка подделки?")
+
+    # Проверяем, что ID пользователя есть в списке админов
+    user_info = urllib.parse.unquote(parsed_data.get('user', '{}'))
+    import json
+    user_id = json.loads(user_info).get('id')
+
+    if user_id not in config.ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Доступ запрещен. Вы не администратор.")
+
+    logger.info(f"Пользователь {user_id} успешно прошел авторизацию в веб-панели.")
+    return {"status": "ok", "user_id": user_id}
+
 # В будущем сюда можно добавлять другие эндпоинты:
 # @app.get("/api/schedules/{employee_id}")
 # @app.get("/api/reports/monthly/{year}/{month}")

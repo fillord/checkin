@@ -26,7 +26,10 @@ FACE_DISTANCE_THRESHOLD_CHECKIN = 0.6
 FACE_DISTANCE_THRESHOLD_UPDATE = 0.75
 
 # --- ФАЙЛЫ ---
-DB_NAME = "checkin_bot_final.db"
+DB_USER = "checkin_user"
+DB_PASSWORD = "Jfl@2386"
+DB_NAME = "checkin_bot_db"
+DB_HOST = "127.0.0.1"
 PERSISTENCE_FILE = "bot_persistence.pickle"
 
 # --- Состояния для диалогов ---

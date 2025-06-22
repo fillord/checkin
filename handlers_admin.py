@@ -2,7 +2,7 @@
 import logging
 import re
 import csv
-from datetime import datetime, date, timedelta
+from datetime import time, datetime, date, timedelta
 from io import StringIO, BytesIO
 
 from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
@@ -251,17 +251,18 @@ async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return config.MODIFY_GET_ID
         
     context.user_data['target_employee_id'] = user_id
-    context.user_data['target_employee_name'] = employee['name']
+    context.user_data['target_employee_name'] = employee['full_name']
     
-    # --> ИСПРАВЛЕНИЕ ЗДЕСЬ: Экранируем точки в сообщении
+    # --> ИСПРАВЛЕНИЕ: Используем правильный ключ 'full_name'
     text_to_send = (
-        f"Изменение графика для: {employee['name']}\\.\n"
+        f"Изменение графика для: {employee['full_name']}\\.\n"
         f"С какой даты будет действовать новый график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
     )
     
     await update.message.reply_text(
         text=text_to_send,
-        parse_mode='MarkdownV2'
+        parse_mode='MarkdownV2',
+        reply_markup=ReplyKeyboardMarkup([[config.BUTTON_ADMIN_BACK]], resize_keyboard=True)
     )
     return config.SCHEDULE_GET_EFFECTIVE_DATE
 
@@ -311,7 +312,7 @@ async def delete_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text("Этот пользователь не найден в базе данных.")
         return DELETE_GET_ID
     context.user_data['target_employee_id'] = user_id
-    await update.message.reply_text(f"Удалить сотрудника {employee['name']} ({user_id})? Это действие деактивирует его доступ.", reply_markup=ReplyKeyboardMarkup([[BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE]], resize_keyboard=True))
+    await update.message.reply_text(f"Удалить сотрудника {employee['full_name']} ({user_id})? Это действие деактивирует его доступ.", reply_markup=ReplyKeyboardMarkup([[BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE]], resize_keyboard=True))
     return DELETE_CONFIRM
 
 
@@ -334,6 +335,10 @@ def schedule_handler_factory(day_index: int):
                 await update.message.reply_text("Неверный формат. Введите время как `чч:мм-чч:мм` или `0`.")
                 return SCHEDULE_MON + day_index
             if 'schedule' not in context.user_data: context.user_data['schedule'] = {}
+            if parsed_time:
+                parsed_time['start'] = time.fromisoformat(parsed_time['start'])
+                parsed_time['end'] = time.fromisoformat(parsed_time['end'])
+
             context.user_data['schedule'][day_index] = parsed_time
             next_day_index = day_index + 1
             if next_day_index < len(DAYS_OF_WEEK):
