@@ -385,22 +385,24 @@ async def admin_add_leave_get_id(update: Update, context: ContextTypes.DEFAULT_T
     """Шаг 2: Получает ID, просит выбрать тип отсутствия."""
     if not isinstance(update.message.forward_origin, MessageOriginUser):
         await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
-        return LEAVE_GET_ID
+        return config.LEAVE_GET_ID
         
     user_id = update.message.forward_origin.sender_user.id
     employee = await database.get_employee_data(user_id, include_inactive=True)
     if not employee:
         await update.message.reply_text("Этот пользователь не найден в базе данных.")
-        return LEAVE_GET_ID
+        return config.LEAVE_GET_ID
     
+    # ИСПРАВЛЕНИЕ: Используем 'full_name'
     context.user_data['leave_employee_id'] = user_id
-    context.user_data['leave_employee_name'] = employee['name']
+    context.user_data['leave_employee_name'] = employee['full_name']
     
     await update.message.reply_text(
-        f"Выбран сотрудник: {employee['name']}.\nТеперь выберите тип отсутствия.",
+        # ИСПРАВЛЕНИЕ: Используем 'full_name'
+        f"Выбран сотрудник: {employee['full_name']}.\nТеперь выберите тип отсутствия.",
         reply_markup=leave_type_keyboard()
     )
-    return LEAVE_GET_TYPE
+    return config.LEAVE_GET_TYPE
 
 async def admin_add_leave_get_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Шаг 3: Получает тип, просит ввести период."""
@@ -471,12 +473,13 @@ async def admin_cancel_leave_get_id(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Этот пользователь не найден в базе данных.")
         return config.CANCEL_LEAVE_GET_ID
     
+    # ИСПРАВЛЕНИЕ: Используем 'full_name'
     context.user_data['cancel_leave_employee_id'] = user_id
-    context.user_data['cancel_leave_employee_name'] = employee['name']
+    context.user_data['cancel_leave_employee_name'] = employee['full_name']
     
-    # --> ИЗМЕНЕНИЕ: Добавлено экранирование всех точек в строке
+    # ИСПРАВЛЕНИЕ: Используем 'full_name' и экранируем точки
     text_to_send = (
-        f"Выбран сотрудник: {employee['name']}\\.\n"
+        f"Выбран сотрудник: {employee['full_name']}\\.\n"
         f"Введите период для отмены отсутствия в формате `ДД\\.ММ\\.ГГГГ-ДД\\.ММ\\.ГГГГ`\\."
     )
 
@@ -528,7 +531,7 @@ async def admin_web_ui(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Для боевого сервера это будет ваш публичный домен.
     # Пока мы используем заглушку, которую вы замените на реальный URL.
     # ПРИМЕР: web_app_url = "https://your-domain.com"
-    web_app_url = "https://google.com" # ЗАМЕНИТЕ ЭТО НА ВАШ РЕАЛЬНЫЙ URL В БУДУЩЕМ
+    web_app_url = "https://panel.yolacloud.ru/" # ЗАМЕНИТЕ ЭТО НА ВАШ РЕАЛЬНЫЙ URL В БУДУЩЕМ
 
     keyboard = [[
         InlineKeyboardButton(

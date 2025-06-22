@@ -82,18 +82,29 @@ async def verify_face(user_id: int, new_photo_file_id: str, context: ContextType
     logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Порог: < {threshold_to_use}. Результат: {is_match}")
     return similarity_score, is_match
 
+# handlers_user.py
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции start_command из bot.py)
     user = update.effective_user
     employee_data = await database.get_employee_data(user.id)
     if not employee_data:
         await update.message.reply_text("Вы не зарегистрированы в системе.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+
+    # --> ИСПРАВЛЕНИЕ: Используем 'full_name' вместо 'name'
     if not employee_data["face_encoding"]:
-        await update.message.reply_text(f"Здравствуйте, {employee_data['name']}!\n\nНужно зарегистрировать ваше лицо.", reply_markup=ReplyKeyboardRemove())
-        return REGISTER_FACE
-    await update.message.reply_text(f"Здравствуйте, {employee_data['name']}! Выберите действие:", reply_markup=main_menu_keyboard())
-    return CHOOSE_ACTION
+        await update.message.reply_text(
+            f"Здравствуйте, {employee_data['full_name']}!\n\nНужно зарегистрировать ваше лицо.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return config.REGISTER_FACE
+
+    # --> ИСПРАВЛЕНИЕ: Используем 'full_name' вместо 'name'
+    await update.message.reply_text(
+        f"Здравствуйте, {employee_data['full_name']}! Выберите действие:",
+        reply_markup=main_menu_keyboard()
+    )
+    return config.CHOOSE_ACTION
 
 async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
@@ -185,14 +196,19 @@ async def ask_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return AWAITING_LEAVE_REASON
 
 @check_active_employee
+# handlers_user.py
+
 async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает причину, отправляет запрос админу и возвращает в главное меню."""
     user = update.effective_user
     reason = update.message.text
     employee_data = await database.get_employee_data(user.id)
-
-    logger.info(f"Сотрудник {employee_data['name']} ({user.id}) отпрашивается по причине: {reason}")
-
+    
+    # --> ИСПРАВЛЕНИЕ: Используем 'full_name'
+    employee_name = employee_data['full_name']
+    
+    logger.info(f"Сотрудник {employee_name} ({user.id}) отпрашивается по причине: {reason}")
+    
     keyboard = [
         [
             InlineKeyboardButton("✅ Разрешить", callback_data=f"leave:approve:{user.id}"),
@@ -201,22 +217,22 @@ async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # --> ИСПРАВЛЕНИЕ: Используем 'full_name'
     text_for_admin = (
         f"❗️ Запрос на уход ❗️\n\n"
-        f"Сотрудник: *{employee_data['name']}*\n"
+        f"Сотрудник: *{employee_name}*\n"
         f"Причина: _{reason}_"
     )
-
-    for admin_id in ADMIN_IDS:
+    
+    for admin_id in config.ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text_for_admin, reply_markup=reply_markup, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Не удалось отправить запрос админу {admin_id}: {e}")
 
     await update.message.reply_text("Ваш запрос отправлен администратору. Ожидайте решения.", reply_markup=main_menu_keyboard())
-
-    # --> КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Возвращаем в главное состояние, а не завершаем диалог
-    return CHOOSE_ACTION
+    
+    return config.CHOOSE_ACTION
 
 @check_active_employee
 async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

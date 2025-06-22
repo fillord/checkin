@@ -99,6 +99,16 @@ async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | 
         await conn.close()
     return None
 
+# database.py
+
+async def get_all_active_employees() -> list[dict]:
+    """Получает список всех активных сотрудников из PostgreSQL."""
+    conn = await get_db_connection()
+    try:
+        rows = await conn.fetch("SELECT telegram_id, full_name, is_active FROM employees WHERE is_active = TRUE ORDER BY full_name")
+        return [dict(row) for row in rows]
+    finally:
+        await conn.close()
 
 async def is_employee_active(telegram_id: int) -> bool:
     """Проверяет, активен ли сотрудник в базе данных PostgreSQL."""
@@ -118,9 +128,14 @@ async def is_employee_active(telegram_id: int) -> bool:
 # ВНИМАНИЕ: Декоратор @alru_cache убран.
 # Простое кэширование не работает с новой моделью соединений asyncpg, так как объект соединения
 # будет меняться при каждом вызове. Мы можем реализовать более сложный кэш позже, если понадобится.
+# database.py
+
 async def get_all_active_employees_with_schedules(for_date: date) -> list:
-    """Получает список активных сотрудников и их АКТУАЛЬНЫЙ на for_date график из PostgreSQL."""
-    # Запрос остается таким же по логике, но с плейсхолдерами $1 и $2
+    """
+    Получает список активных сотрудников и их АКТУАЛЬНЫЙ на for_date график.
+    Возвращает ТОЛЬКО тех, у кого сегодня рабочий день.
+    """
+    # Этот сложный запрос с оконной функцией эффективно получает последнюю версию графика для каждого сотрудника
     query = """
         WITH latest_schedules AS (
             SELECT
@@ -136,13 +151,11 @@ async def get_all_active_employees_with_schedules(for_date: date) -> list:
             ls.start_time
         FROM employees e
         JOIN latest_schedules ls ON e.telegram_id = ls.employee_telegram_id
-        WHERE e.is_active = TRUE AND ls.rn = 1 AND ls.start_time IS NOT NULL
+        WHERE e.is_active = TRUE AND ls.rn = 1 AND ls.start_time IS NOT NULL -- <-- ВОТ ГЛАВНОЕ ИСПРАВЛЕНИЕ
     """
     conn = await get_db_connection()
     try:
-        # Используем conn.fetch() для получения списка строк
         rows = await conn.fetch(query, for_date, for_date.weekday())
-        # Преобразуем список объектов Record в список кортежей, как было раньше, для совместимости
         return [tuple(row.values()) for row in rows]
     finally:
         await conn.close()
@@ -274,21 +287,16 @@ async def set_face_encoding(telegram_id: int, encoding: np.ndarray):
         await conn.close()
 # database.py
 
-# database.py
-
-# database.py
-
 async def add_or_update_employee(telegram_id: int, full_name: str, schedule_data: dict, effective_date: date):
     """
-    Добавляет сотрудника или полностью перезаписывает версию его графика
-    с указанной даты вступления в силу в PostgreSQL.
+    Добавляет/обновляет сотрудника и его график, используя надежный механизм
+    PostgreSQL INSERT ... ON CONFLICT. Этот метод гарантирует перезапись.
     """
     conn = await get_db_connection()
     try:
-        # Используем транзакцию, чтобы все операции выполнились как единое целое.
-        # Либо все успешно, либо ничего не меняется.
+        # Используем транзакцию, чтобы все 7 дней обновились как единое целое.
         async with conn.transaction():
-            # Обновляем данные самого сотрудника с помощью элегантной конструкции ON CONFLICT
+            # Шаг 1: Обновляем самого сотрудника
             await conn.execute(
                 """
                 INSERT INTO employees (telegram_id, full_name, is_active) VALUES ($1, $2, TRUE)
@@ -297,26 +305,30 @@ async def add_or_update_employee(telegram_id: int, full_name: str, schedule_data
                 telegram_id, full_name
             )
 
-            # Перед вставкой новой версии графика, полностью удаляем старую для этой же effective_date
-            await conn.execute(
-                "DELETE FROM schedules WHERE employee_telegram_id = $1 AND effective_from_date = $2",
-                telegram_id, effective_date
-            )
-
-            # Вставляем 7 новых записей для всех дней недели
+            # Шаг 2: Обновляем/вставляем график для каждого из 7 дней
             for day_of_week in range(7):
                 times = schedule_data.get(day_of_week)
+                
+                # Получаем время (объект time) или None для выходного
                 start_time = times.get('start') if times else None
                 end_time = times.get('end') if times else None
                 
+                # Используем ON CONFLICT для атомарного обновления или вставки.
+                # Если запись с таким (id, день, дата) уже есть, она будет обновлена.
+                # Если нет - будет вставлена новая.
                 await conn.execute(
-                    "INSERT INTO schedules (employee_telegram_id, day_of_week, start_time, end_time, effective_from_date) VALUES ($1, $2, $3, $4, $5)",
-                    telegram_id, day_of_week, start_time, end_time, effective_date
+                    """
+                    INSERT INTO schedules (employee_telegram_id, day_of_week, effective_from_date, start_time, end_time)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (employee_telegram_id, day_of_week, effective_from_date) DO UPDATE SET
+                        start_time = EXCLUDED.start_time,
+                        end_time = EXCLUDED.end_time
+                    """,
+                    telegram_id, day_of_week, effective_date, start_time, end_time
                 )
         
-        logger.info(f"График для сотрудника {telegram_id} с {effective_date} успешно обновлен.")
+        logger.info(f"График для сотрудника {telegram_id} с {effective_date} успешно обновлен (метод ON CONFLICT).")
     finally:
-        # Убираем вызовы очистки кэша, так как кэш отключен
         await conn.close()
 
 
@@ -357,12 +369,10 @@ async def override_as_absent(telegram_id: int, for_date: date):
 
 # database.py
 
-# database.py
-
 async def add_leave_period(telegram_id: int, start_date: date, end_date: date, leave_type: str):
     """
-    Добавляет записи об отпуске/больничном для сотрудника на заданный период в PostgreSQL,
-    учитывая версионирование графика.
+    Добавляет записи об отпуске/больничном для сотрудника на заданный период,
+    покрывая ВСЕ дни в периоде, включая выходные.
     """
     conn = await get_db_connection()
     try:
@@ -370,19 +380,27 @@ async def add_leave_period(telegram_id: int, start_date: date, end_date: date, l
         
         # Используем транзакцию, чтобы все записи добавились как единое целое
         async with conn.transaction():
+            # Проходим по каждому дню в указанном пользователем диапазоне
             for current_date in (start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)):
-                # Для каждого дня в периоде проверяем, был ли он рабочим по актуальному на тот день графику
-                schedule_for_day = await get_schedule_for_specific_date(conn, telegram_id, current_date)
                 
-                if schedule_for_day: # Если день был рабочим, добавляем отметку
-                    end_of_day_local = datetime.combine(current_date, time(23, 59, 58), tzinfo=LOCAL_TIMEZONE)
-                    timestamp_utc = end_of_day_local.astimezone(ZoneInfo("UTC"))
-                    
-                    await conn.execute(
-                        "INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status) VALUES ($1, $2, $3, $4)",
-                        timestamp_utc, telegram_id, 'SYSTEM_LEAVE', leave_status
-                    )
-        logger.info(f"Для сотрудника {telegram_id} назначен(а) {leave_type} с {start_date} по {end_date}")
+                # Определяем начало и конец этого дня в UTC для точного поиска
+                start_of_day_utc = datetime.combine(current_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
+                end_of_day_utc = datetime.combine(current_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
+
+                # Сначала удаляем любые предыдущие отметки об отпуске/больничном за этот день, чтобы избежать дублей
+                await conn.execute(
+                    "DELETE FROM check_ins WHERE employee_telegram_id = $1 AND check_in_type = 'SYSTEM_LEAVE' AND timestamp BETWEEN $2 AND $3",
+                    telegram_id, start_of_day_utc, end_of_day_utc
+                )
+                
+                # Теперь вставляем новую, правильную отметку в конец дня
+                timestamp_to_insert = end_of_day_utc
+                await conn.execute(
+                    "INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status) VALUES ($1, $2, $3, $4)",
+                    timestamp_to_insert, telegram_id, 'SYSTEM_LEAVE', leave_status
+                )
+
+        logger.info(f"Для сотрудника {telegram_id} назначен(а) {leave_type} с {start_date} по {end_date} (включая выходные).")
     finally:
         await conn.close()
 

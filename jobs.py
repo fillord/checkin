@@ -172,7 +172,9 @@ async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
         try:
             if start_time_str is None:
                 continue
-            start_time = time.fromisoformat(start_time_str)
+            logger.info(f"---[ПРОВЕРКА]--- Сотрудник: {name} (ID: {emp_id}), график: '{start_time_str}'")
+            # asyncpg возвращает объект time, а не строку. Преобразуем его.
+            start_time = start_time_str if isinstance(start_time_str, time) else time.fromisoformat(start_time_str)
             shift_start_datetime = datetime.combine(now.date(), start_time, tzinfo=LOCAL_TIMEZONE)
 
             # --- Логика для напоминания (остается без изменений) ---
