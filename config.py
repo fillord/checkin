@@ -3,29 +3,19 @@ import os
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
 
-# --- БАЗОВЫЕ НАСТРОЙКИ ---
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 if not BOT_TOKEN:
     raise ValueError("Не найден TELEGRAM_BOT_TOKEN в файле .env.")
 
-# !!! ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID АДМИНОВ !!!
 ADMIN_IDS = [1027958463]
 
-# --- НАСТРОЙКИ ЛОГИКИ ---
 LOCAL_TIMEZONE = ZoneInfo("Asia/Almaty")
 WORK_LOCATION_COORDS = (43.25835460134987, 76.88279745482673)
 ALLOWED_RADIUS_METERS = 200
-# Порог для ежедневного чекина. Расстояние < 0.6 примерно равно схожести > 40%.
-# Это достаточно строгая проверка.
 FACE_DISTANCE_THRESHOLD_CHECKIN = 0.6
-
-# Порог для обновления фото профиля. Расстояние < 0.75 примерно равно схожести > 25%.
-# Это менее строгая проверка, позволяющая обновить фото, если внешность изменилась.
 FACE_DISTANCE_THRESHOLD_UPDATE = 0.75
-
-# --- ФАЙЛЫ ---
 DB_USER = "checkin_user"
 DB_PASSWORD = "Jfl@2386"
 DB_NAME = "checkin_bot_db"
@@ -50,13 +40,13 @@ AWAITING_LEAVE_REASON = 20
     LEAVE_GET_TYPE,
     LEAVE_GET_PERIOD
 ) = range(21, 24)
-
 (
     CANCEL_LEAVE_GET_ID,
     CANCEL_LEAVE_GET_PERIOD
 ) = range(24, 26) 
 SCHEDULE_GET_EFFECTIVE_DATE = 26
 AWAITING_NEW_FACE_PHOTO = 26
+
 # --- Тексты кнопок ---
 BUTTON_ARRIVAL = "✅ Приход"
 BUTTON_DEPARTURE = "🏁 Уход"

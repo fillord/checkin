@@ -8,13 +8,7 @@ from collections import defaultdict
 from zoneinfo import ZoneInfo
 from config import DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, LOCAL_TIMEZONE
 
-# Убираем кэширующий декоратор, так как он несовместим с новым способом передачи соединения
-from async_lru import alru_cache 
-
 logger = logging.getLogger(__name__)
-
-# Строка подключения (DSN) для PostgreSQL
-# dsn = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
 
 async def get_db_connection():
     """
@@ -30,10 +24,8 @@ async def get_db_connection():
 
 async def init_db():
     """Инициализирует таблицы в базе данных PostgreSQL с правильными типами данных."""
-    # Устанавливаем соединение
     conn = await get_db_connection()
     try:
-        # Создаем таблицу employees
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS employees (
                 telegram_id BIGINT PRIMARY KEY,
@@ -42,8 +34,6 @@ async def init_db():
                 face_encoding BYTEA
             );
         """)
-        
-        # Создаем таблицу schedules
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
                 id SERIAL PRIMARY KEY,
@@ -56,8 +46,6 @@ async def init_db():
                 UNIQUE(employee_telegram_id, day_of_week, effective_from_date)
             );
         """)
-        
-        # Создаем таблицу check_ins
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS check_ins (
                 id SERIAL PRIMARY KEY,
@@ -74,10 +62,7 @@ async def init_db():
         """)
         logger.info("База данных PostgreSQL инициализирована.")
     finally:
-        # Всегда закрываем соединение
         await conn.close()
-
-# database.py
 
 async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | None:
     """Получает данные сотрудника из PostgreSQL."""
@@ -85,7 +70,6 @@ async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | 
     sql = "SELECT telegram_id, full_name, face_encoding, is_active FROM employees WHERE telegram_id = $1"
     if not include_inactive:
         sql += " AND is_active = TRUE"
-    
     # 2. Получаем соединение
     conn = await get_db_connection()
     try:
@@ -99,13 +83,34 @@ async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | 
         await conn.close()
     return None
 
-# database.py
+async def get_all_active_employees(search_query: str = None, sort_by: str = 'full_name', sort_order: str = 'asc') -> list[dict]:
+    """
+    Получает список всех активных сотрудников из PostgreSQL с возможностью поиска и сортировки.
+    """
+    # Белый список колонок для сортировки, чтобы предотвратить SQL-инъекции
+    allowed_sort_columns = ['telegram_id', 'full_name']
+    if sort_by not in allowed_sort_columns:
+        sort_by = 'full_name'  # Значение по умолчанию
 
-async def get_all_active_employees() -> list[dict]:
-    """Получает список всех активных сотрудников из PostgreSQL."""
+    # Белый список для направления сортировки
+    sort_order = 'DESC' if sort_order.lower() == 'desc' else 'ASC'
+
+    query_params = []
+    # Базовый запрос
+    sql = "SELECT telegram_id, full_name, is_active FROM employees WHERE is_active = TRUE"
+
+    # Если есть поисковый запрос, добавляем условие WHERE
+    # ILIKE - это регистронезависимый поиск в PostgreSQL
+    if search_query:
+        sql += " AND full_name ILIKE $1"
+        query_params.append(f"%{search_query}%")
+
+    # Добавляем сортировку
+    sql += f" ORDER BY {sort_by} {sort_order}"
     conn = await get_db_connection()
     try:
-        rows = await conn.fetch("SELECT telegram_id, full_name, is_active FROM employees WHERE is_active = TRUE ORDER BY full_name")
+        # Выполняем запрос с динамически собранными параметрами
+        rows = await conn.fetch(sql, *query_params)
         return [dict(row) for row in rows]
     finally:
         await conn.close()
@@ -123,12 +128,6 @@ async def is_employee_active(telegram_id: int) -> bool:
         return is_active if is_active is not None else False
     finally:
         await conn.close()
-
-
-# ВНИМАНИЕ: Декоратор @alru_cache убран.
-# Простое кэширование не работает с новой моделью соединений asyncpg, так как объект соединения
-# будет меняться при каждом вызове. Мы можем реализовать более сложный кэш позже, если понадобится.
-# database.py
 
 async def get_all_active_employees_with_schedules(for_date: date) -> list:
     """
@@ -160,10 +159,6 @@ async def get_all_active_employees_with_schedules(for_date: date) -> list:
     finally:
         await conn.close()
 
-
-###
-# database.py
-
 async def get_schedule_for_specific_date(conn: asyncpg.Connection, telegram_id: int, target_date: date) -> dict | None:
     """Получает корректную версию графика для сотрудника на КОНКРЕТНУЮ дату, используя переданное соединение."""
     query = """
@@ -179,7 +174,6 @@ async def get_schedule_for_specific_date(conn: asyncpg.Connection, telegram_id: 
     
     return None
 
-# ВНИМАНИЕ: Декоратор @alru_cache убран. Мы можем вернуть кэширование позже, если потребуется.
 async def get_employee_today_schedule(telegram_id: int) -> dict | None:
     """Получает актуальный график сотрудника на СЕГОДНЯ из PostgreSQL."""
     today = datetime.now(LOCAL_TIMEZONE).date()
@@ -209,8 +203,6 @@ async def has_checked_in_on_date(telegram_id: int, check_in_type: str, for_date:
 
     conn = await get_db_connection()
     try:
-        # Используем конструкцию `status = ANY($3)` - это безопасный способ для PostgreSQL
-        # передать список значений, в отличие от форматирования строки.
         query = """
             SELECT 1 FROM check_ins 
             WHERE employee_telegram_id = $1
@@ -229,10 +221,6 @@ async def has_checked_in_today(telegram_id: int, check_in_type: str) -> bool:
     # Чтобы не дублировать код, просто вызываем нашу новую функцию с сегодняшней датой
     today_local = datetime.now(LOCAL_TIMEZONE).date()
     return await has_checked_in_on_date(telegram_id, check_in_type, today_local)
-
-
-####
-# database.py
 
 async def is_day_finished_for_user(telegram_id: int) -> bool:
     """
@@ -285,7 +273,6 @@ async def set_face_encoding(telegram_id: int, encoding: np.ndarray):
         )
     finally:
         await conn.close()
-# database.py
 
 async def add_or_update_employee(telegram_id: int, full_name: str, schedule_data: dict, effective_date: date):
     """
@@ -331,7 +318,6 @@ async def add_or_update_employee(telegram_id: int, full_name: str, schedule_data
     finally:
         await conn.close()
 
-
 async def log_check_in_attempt(telegram_id: int, check_in_type: str, status: str, lat=None, lon=None, distance=None, similarity=None):
     """Логирует попытку чекина в PostgreSQL."""
     conn = await get_db_connection()
@@ -349,7 +335,6 @@ async def log_check_in_attempt(telegram_id: int, check_in_type: str, status: str
     finally:
         await conn.close()
 
-
 async def override_as_absent(telegram_id: int, for_date: date):
     """Вставляет в PostgreSQL системную запись о прогуле из-за отсутствия чекина ухода."""
     # Создаем datetime объект в локальной таймзоне
@@ -366,8 +351,6 @@ async def override_as_absent(telegram_id: int, for_date: date):
         logger.info(f"Сотрудник {telegram_id} помечен как прогульщик (не отметил уход) за {for_date.isoformat()}")
     finally:
         await conn.close()
-
-# database.py
 
 async def add_leave_period(telegram_id: int, start_date: date, end_date: date, leave_type: str):
     """
@@ -404,7 +387,6 @@ async def add_leave_period(telegram_id: int, start_date: date, end_date: date, l
     finally:
         await conn.close()
 
-
 async def get_all_checkins_for_export() -> list:
     """Получает все записи для CSV-экспорта из PostgreSQL."""
     conn = await get_db_connection()
@@ -421,7 +403,6 @@ async def get_all_checkins_for_export() -> list:
         return [tuple(row.values()) for row in rows]
     finally:
         await conn.close()
-
 
 async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
     """Собирает статистику для текстового отчета из PostgreSQL."""
@@ -473,8 +454,6 @@ async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
         await conn.close()
     return stats
 
-# database.py
-
 async def cancel_leave_period(telegram_id: int, start_date: date, end_date: date) -> int:
     """Удаляет записи об отпуске/больничном для сотрудника на заданный период в PostgreSQL."""
     conn = await get_db_connection()
@@ -500,7 +479,6 @@ async def cancel_leave_period(telegram_id: int, start_date: date, end_date: date
         return rows_deleted
     finally:
         await conn.close()
-
 
 async def get_monthly_summary_data(year: int, month: int) -> list[list]:
     """Собирает и формирует данные для сводного месячного отчета из PostgreSQL."""
@@ -573,8 +551,6 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         return result_table
     finally:
         await conn.close()
-
-# database.py
 
 async def get_dashboard_stats(for_date: date) -> dict:
     """Собирает оперативную статистику за указанную дату для дашборда из PostgreSQL."""

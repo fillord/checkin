@@ -1,13 +1,14 @@
 # jobs.py
 import logging
+import re
+import config
+import database
+
 from datetime import datetime, timedelta, time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import get_all_active_employees_with_schedules, has_checked_in_today, get_report_stats_for_period
 from config import LOCAL_TIMEZONE, ADMIN_IDS, LIVENESS_ACTIONS # LIVENESS_ACTIONS - пример, если понадобится
-import re
-import config
-import database
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +71,11 @@ async def send_daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Формирование и отправка автоматического дневного отчета...")
     await send_report_for_period(datetime.now(LOCAL_TIMEZONE).date(), datetime.now(LOCAL_TIMEZONE).date(), context, "Ежедневный отчет", ADMIN_IDS)
 
-# jobs.py
-
 def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для Telegram MarkdownV2."""
     # В MarkdownV2 нужно экранировать эти символы
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-
-# jobs.py
 
 def _format_user_list(users_dict: dict, show_status=False) -> str:
     """Вспомогательная функция для красивого форматирования списка сотрудников."""
@@ -99,7 +96,6 @@ def _format_user_list(users_dict: dict, show_status=False) -> str:
                 line += f" *\\({escape_markdown_v2(status_text)}\\)*"
         lines.append(line)
     return "\n".join(f" \\- {line}" for line in lines)
-
 
 async def send_dashboard_snapshot(context: ContextTypes.DEFAULT_TYPE, report_type: str):
     """Формирует и отправляет сводку-дашборд администраторам."""
@@ -149,7 +145,6 @@ async def send_dashboard_snapshot(context: ContextTypes.DEFAULT_TYPE, report_typ
         except Exception as e:
             logger.error(f"Не удалось отправить дашборд админу {admin_id}: {e}")
 
-# jobs.py
 async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(LOCAL_TIMEZONE)
     today_str = now.date().isoformat()
@@ -249,7 +244,6 @@ async def send_departure_reminders(context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"Ошибка в цикле напоминаний об уходе для {emp_id}: {e}", exc_info=True)
-
 
 async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
     """Применяет штраф за неотмеченный уход."""

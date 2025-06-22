@@ -2,19 +2,21 @@
 import logging
 import re
 import csv
+import database
+import config
+
 from datetime import time, datetime, date, timedelta
 from io import StringIO, BytesIO
 
 from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import ContextTypes, ConversationHandler
 
-import database
 from jobs import send_report_for_period
 from keyboards import admin_menu_keyboard, reports_menu_keyboard, leave_type_keyboard
 from keyboards import (
     BUTTON_LEAVE_TYPE_VACATION, BUTTON_LEAVE_TYPE_SICK
 )
-import config
+
 from config import (
     ADMIN_IDS, ADMIN_MENU, ADMIN_REPORTS_MENU, REPORT_GET_DATES, MONTHLY_CSV_GET_MONTH,
     ADD_GET_ID, ADD_GET_NAME, MODIFY_GET_ID, DELETE_GET_ID, DELETE_CONFIRM,
@@ -45,20 +47,17 @@ async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("Меню отчетов:", reply_markup=reports_menu_keyboard())
     return ADMIN_REPORTS_MENU
 
-
 async def admin_get_today_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_today_report из bot.py)
     today = datetime.now(database.LOCAL_TIMEZONE).date()
     await send_report_for_period(today, today, context, "Отчет за сегодня", update.effective_chat.id)
     return ADMIN_REPORTS_MENU
 
-
 async def admin_get_yesterday_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_yesterday_report из bot.py)
     yesterday = datetime.now(database.LOCAL_TIMEZONE).date() - timedelta(days=1)
     await send_report_for_period(yesterday, yesterday, context, "Отчет за вчера", update.effective_chat.id)
     return ADMIN_REPORTS_MENU
-
 
 async def admin_get_weekly_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_weekly_report из bot.py)
@@ -75,7 +74,6 @@ async def admin_custom_report_start(update: Update, context: ContextTypes.DEFAUL
         reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
     )
     return REPORT_GET_DATES
-
 
 async def admin_custom_report_get_dates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_custom_report_get_dates из bot.py)
@@ -96,7 +94,6 @@ async def admin_custom_report_get_dates(update: Update, context: ContextTypes.DE
         await update.message.reply_text("Неверный формат. Пожалуйста, введите даты в формате `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ` и попробуйте снова.")
         return REPORT_GET_DATES
 
-
 async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_export_csv из bot.py)
     await update.message.reply_text("Подготовка данных для экспорта...")
@@ -109,7 +106,6 @@ async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_document(document=InputFile(csv_bytes, filename=f"checkin_export_{date.today().isoformat()}.csv"), caption="Экспорт всех записей о чек-инах.")
     return ADMIN_REPORTS_MENU
 
-
 async def admin_monthly_csv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_monthly_csv_start из bot.py)
     await update.message.reply_text(
@@ -119,9 +115,6 @@ async def admin_monthly_csv_start(update: Update, context: ContextTypes.DEFAULT_
         parse_mode='MarkdownV2'
     )
     return MONTHLY_CSV_GET_MONTH
-
-
-# handlers_admin.py
 
 async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
@@ -202,7 +195,6 @@ async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("Добавление сотрудника. Шаг 1: Перешлите сообщение от пользователя.", reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True))
     return ADD_GET_ID
 
-
 async def add_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции add_get_id из bot.py)
     if not isinstance(update.message.forward_origin, MessageOriginUser):
@@ -212,7 +204,6 @@ async def add_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['new_employee_id'] = user_id
     await update.message.reply_text(f"ID: `{user_id}`\\.\nШаг 2: Введите ФИО\\.", parse_mode='MarkdownV2')
     return ADD_GET_NAME
-
 
 async def add_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['new_employee_name'] = update.message.text
@@ -229,15 +220,11 @@ async def add_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     )
     return config.SCHEDULE_GET_EFFECTIVE_DATE
 
-
 async def admin_modify_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_modify_start из bot.py)
     context.user_data.clear()
     await update.message.reply_text("Изменение графика. Перешлите сообщение от сотрудника.", reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True))
     return MODIFY_GET_ID
-
-
-# handlers_admin.py
 
 async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not isinstance(update.message.forward_origin, MessageOriginUser):
@@ -253,7 +240,6 @@ async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data['target_employee_id'] = user_id
     context.user_data['target_employee_name'] = employee['full_name']
     
-    # --> ИСПРАВЛЕНИЕ: Используем правильный ключ 'full_name'
     text_to_send = (
         f"Изменение графика для: {employee['full_name']}\\.\n"
         f"С какой даты будет действовать новый график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
@@ -265,8 +251,6 @@ async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         reply_markup=ReplyKeyboardMarkup([[config.BUTTON_ADMIN_BACK]], resize_keyboard=True)
     )
     return config.SCHEDULE_GET_EFFECTIVE_DATE
-
-# handlers_admin.py
 
 async def schedule_get_effective_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает дату вступления в силу графика и проверяет, что она не в прошлом."""
@@ -292,14 +276,11 @@ async def schedule_get_effective_date(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(f"График будет действовать с {effective_date.strftime('%d.%m.%Y')}.\nТеперь введите время для {config.DAYS_OF_WEEK[0]} (`09:00-18:00` или `0`).")
     return config.SCHEDULE_MON
 
-
-
 async def admin_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_delete_start из bot.py)
     context.user_data.clear()
     await update.message.reply_text("Удаление сотрудника. Перешлите сообщение от сотрудника.", reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True))
     return DELETE_GET_ID
-
 
 async def delete_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции delete_get_id из bot.py)
@@ -314,7 +295,6 @@ async def delete_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data['target_employee_id'] = user_id
     await update.message.reply_text(f"Удалить сотрудника {employee['full_name']} ({user_id})? Это действие деактивирует его доступ.", reply_markup=ReplyKeyboardMarkup([[BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE]], resize_keyboard=True))
     return DELETE_CONFIRM
-
 
 async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции delete_confirm из bot.py)
@@ -458,8 +438,6 @@ async def admin_cancel_leave_start(update: Update, context: ContextTypes.DEFAULT
         reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
     )
     return CANCEL_LEAVE_GET_ID
-
-# handlers_admin.py
 
 async def admin_cancel_leave_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Шаг 2: Получает ID, просит ввести период."""

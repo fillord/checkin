@@ -1,6 +1,10 @@
 # main.py
 import logging
 import asyncio
+import config
+import database
+import jobs
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -11,15 +15,10 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# concurrent.futures.ProcessPoolExecutor больше не нужен здесь напрямую
 from functools import partial
-# Импортируем наши модули
-import config
 from config import (
     SCHEDULE_GET_EFFECTIVE_DATE
 )
-import database
-import jobs
 from app_context import shutdown_executor
 from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
@@ -46,8 +45,6 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     """Основная функция для запуска бота."""
-    
-    # Блок try...finally для гарантированного закрытия пула
     try:
         persistence = PicklePersistence(filepath=config.PERSISTENCE_FILE)
         application = Application.builder().token(config.BOT_TOKEN).persistence(persistence).build()
@@ -65,7 +62,6 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival), 
                     MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_UPDATE_PHOTO}$"), update_photo_start),
-                    
                 ],
                 config.AWAITING_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)],
                 config.REGISTER_FACE: [MessageHandler(filters.PHOTO, register_face)],
@@ -76,8 +72,6 @@ async def main() -> None:
             fallbacks=[CommandHandler("cancel", employee_cancel_command)],
             allow_reentry=True, name="checkin_conversation", persistent=True,
         )
-        
-        # --> ИЗМЕНЕНИЕ: Используем functools.partial для корректной передачи индекса дня
         schedule_handlers = [
             MessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -138,9 +132,6 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_get_effective_date)
                 ],
-                
-                # --> ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ <--
-                # Добавляем обработчик кнопки "Назад" для КАЖДОГО дня недели
                 config.SCHEDULE_MON: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[0]],
                 config.SCHEDULE_TUE: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[1]],
                 config.SCHEDULE_WED: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[2]],
@@ -155,7 +146,7 @@ async def main() -> None:
 
         application.add_handler(admin_conv_handler)
         application.add_handler(checkin_conv_handler)
-        
+
         # Добавляем отдельный обработчик для решения админа по уходу
         application.add_handler(CallbackQueryHandler(handle_leave_request_decision, pattern="^leave:"))
         application.add_handler(CommandHandler("web", admin_web_ui))

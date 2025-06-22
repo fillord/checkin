@@ -1,20 +1,20 @@
 # webapp.py
 import logging
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from typing import List
 import urllib.parse
 import hmac
 import hashlib
 import json
-from datetime import date # Убедитесь, что date импортирован
-from database import add_leave_period, cancel_leave_period
-# Импортируем наши модули
 import config
-import database # <-- Теперь мы импортируем наш основной модуль для работы с БД
+import database
 
-# Настраиваем логирование
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+from datetime import date
+from database import add_leave_period, cancel_leave_period
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -39,21 +39,25 @@ class LeaveRequest(BaseModel):
 # --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
 
-
 # --- API Эндпоинты (точки доступа к данным) ---
 
 @app.get("/api/employees", response_model=List[Employee])
-async def get_employees():
-    """Возвращает список всех активных сотрудников, используя database.py."""
+async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_name', sort_order: Optional[str] = 'asc'):
+    """
+    Возвращает список всех активных сотрудников, используя database.py с поиском и сортировкой.
+    """
     try:
-        # Вызываем функцию из нашего модуля, больше никакой логики БД здесь нет
-        db_employees = await database.get_all_active_employees()
+        # Передаем параметры из запроса в нашу функцию для работы с БД
+        db_employees = await database.get_all_active_employees(
+            search_query=q, 
+            sort_by=sort_by, 
+            sort_order=sort_order
+        )
         # Преобразуем ответ БД в модель Pydantic
         return [Employee(id=emp['telegram_id'], full_name=emp['full_name'], is_active=emp['is_active']) for emp in db_employees]
     except Exception as e:
         logger.error(f"Ошибка при получении списка сотрудников через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
-
 
 @app.post("/api/employees/deactivate")
 async def deactivate_employee(request: DeactivateRequest):
@@ -65,8 +69,6 @@ async def deactivate_employee(request: DeactivateRequest):
     except Exception as e:
         logger.error(f"Ошибка при деактивации сотрудника {request.id} через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка на сервере при деактивации сотрудника.")
-
-# webapp.py
 
 @app.post("/api/leaves/add")
 async def add_leave(request: LeaveRequest):
@@ -109,7 +111,6 @@ async def get_monthly_report(year: int, month: int):
         logger.error(f"Ошибка при формировании месячного отчета через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
-
 @app.post("/api/validate_user")
 async def validate_user(request: AuthRequest):
     """Проверяет подлинность данных, полученных от Telegram Web App."""
@@ -137,7 +138,6 @@ async def validate_user(request: AuthRequest):
     except Exception as e:
         logger.error(f"Ошибка валидации пользователя: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Некорректные данные для авторизации.")
-
 
 # --- Эндпоинт для отдачи главной HTML страницы ---
 @app.get("/")

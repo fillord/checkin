@@ -4,6 +4,9 @@ import asyncio
 import random
 import face_recognition
 import numpy as np
+import database
+import config
+
 from datetime import datetime, date, time, timedelta
 from io import BytesIO
 from concurrent.futures import ProcessPoolExecutor
@@ -11,19 +14,16 @@ from app_context import get_process_pool_executor
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from geopy.distance import geodesic
-import database
+
 from database import is_day_finished_for_user
 from decorators import check_active_employee
 from keyboards import main_menu_keyboard
-import config
+
 from config import (
     CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE, LIVENESS_ACTIONS,
     BUTTON_ARRIVAL, BUTTON_DEPARTURE, WORK_LOCATION_COORDS, ALLOWED_RADIUS_METERS,
     AWAITING_LEAVE_REASON, ADMIN_IDS, AWAITING_NEW_FACE_PHOTO
 )
-
-# handlers_user.py
-# ... (после всех import)
 
 def _face_recognition_worker(image_bytes: bytes) -> np.ndarray | None:
     """Синхронная функция для поиска и кодирования лица на фото."""
@@ -42,14 +42,10 @@ def _face_verification_worker(image_bytes: bytes, known_encoding_bytes: bytes, t
         
     distance = face_recognition.face_distance([known_encoding], new_face_encodings[0])[0]
     similarity_score = max(0.0, (1.0 - distance) * 100)
-    # --> ИЗМЕНЕНИЕ: Используем переданный threshold
     is_match = distance < threshold
     return similarity_score, is_match
 
-
 logger = logging.getLogger(__name__)
-
-# handlers_user.py
 
 async def verify_face(user_id: int, new_photo_file_id: str, context: ContextTypes.DEFAULT_TYPE, custom_threshold: float = None) -> tuple[float, bool]:
     """
@@ -67,8 +63,6 @@ async def verify_face(user_id: int, new_photo_file_id: str, context: ContextType
     await new_photo_file.download_to_memory(photo_stream)
     image_bytes = photo_stream.getvalue()
 
-    # --> ИЗМЕНЕНИЕ: Определяем, какой порог использовать
-    # Если custom_threshold не передан, используем строгий порог для чекинов по умолчанию.
     threshold_to_use = custom_threshold if custom_threshold is not None else config.FACE_DISTANCE_THRESHOLD_CHECKIN
 
     loop = asyncio.get_running_loop()
@@ -82,24 +76,18 @@ async def verify_face(user_id: int, new_photo_file_id: str, context: ContextType
     logger.info(f"Сравнение для {user_id}: схожесть {similarity_score:.2f}%. Порог: < {threshold_to_use}. Результат: {is_match}")
     return similarity_score, is_match
 
-# handlers_user.py
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     employee_data = await database.get_employee_data(user.id)
     if not employee_data:
         await update.message.reply_text("Вы не зарегистрированы в системе.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-
-    # --> ИСПРАВЛЕНИЕ: Используем 'full_name' вместо 'name'
     if not employee_data["face_encoding"]:
         await update.message.reply_text(
             f"Здравствуйте, {employee_data['full_name']}!\n\nНужно зарегистрировать ваше лицо.",
             reply_markup=ReplyKeyboardRemove()
         )
         return config.REGISTER_FACE
-
-    # --> ИСПРАВЛЕНИЕ: Используем 'full_name' вместо 'name'
     await update.message.reply_text(
         f"Здравствуйте, {employee_data['full_name']}! Выберите действие:",
         reply_markup=main_menu_keyboard()
@@ -140,8 +128,7 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if await database.has_checked_in_today(user.id, "ARRIVAL"):
         await update.message.reply_text("Вы уже отмечали приход сегодня.", reply_markup=main_menu_keyboard())
         return CHOOSE_ACTION
-
-    # ПРОВЕРКА: является ли этот чекин опозданием, инициированным ботом?
+    
     is_unhandled_late = user.id in context.bot_data.get('unhandled_late_users', set())
 
     if is_unhandled_late:
@@ -165,7 +152,6 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data["checkin_type"] = "ARRIVAL"
     await update.message.reply_text(f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
     return AWAITING_PHOTO
-
 
 async def handle_late_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Отметиться с опозданием'."""
@@ -196,15 +182,12 @@ async def ask_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return AWAITING_LEAVE_REASON
 
 @check_active_employee
-# handlers_user.py
-
 async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает причину, отправляет запрос админу и возвращает в главное меню."""
     user = update.effective_user
     reason = update.message.text
     employee_data = await database.get_employee_data(user.id)
     
-    # --> ИСПРАВЛЕНИЕ: Используем 'full_name'
     employee_name = employee_data['full_name']
     
     logger.info(f"Сотрудник {employee_name} ({user.id}) отпрашивается по причине: {reason}")
@@ -217,13 +200,11 @@ async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # --> ИСПРАВЛЕНИЕ: Используем 'full_name'
     text_for_admin = (
         f"❗️ Запрос на уход ❗️\n\n"
         f"Сотрудник: *{employee_name}*\n"
         f"Причина: _{reason}_"
     )
-    
     for admin_id in config.ADMIN_IDS:
         try:
             await context.bot.send_message(chat_id=admin_id, text=text_for_admin, reply_markup=reply_markup, parse_mode='Markdown')
@@ -271,7 +252,6 @@ async def update_photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     return AWAITING_NEW_FACE_PHOTO
 
-
 @check_active_employee
 async def update_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает новое фото, верифицирует его со старым (с низким порогом) и обновляет."""
@@ -280,7 +260,6 @@ async def update_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.message.reply_text("Фото получено. Сравниваю с вашим текущим фото в базе...")
 
-    # --> ИЗМЕНЕНИЕ: Вызываем verify_face, передавая менее строгий порог
     similarity_score, is_match = await verify_face(
         user.id,
         new_photo_file_id,
@@ -336,8 +315,6 @@ async def awaiting_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Отлично, фото получил. Теперь, пожалуйста, подтвердите вашу геолокацию.", reply_markup=ReplyKeyboardMarkup(location_keyboard, resize_keyboard=True, one_time_keyboard=True))
     return AWAITING_LOCATION
 
-
-# handlers_user.py
 @check_active_employee
 async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user, user_location = update.effective_user, update.message.location
@@ -384,13 +361,11 @@ async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.clear()
     return CHOOSE_ACTION
 
-
 async def employee_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции employee_cancel_command из bot.py)
     await update.message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())
     context.user_data.clear()
     return CHOOSE_ACTION
-
 
 async def late_checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции late_checkin_callback из bot.py)

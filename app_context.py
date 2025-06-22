@@ -4,7 +4,6 @@ from concurrent.futures import ProcessPoolExecutor
 
 logger = logging.getLogger(__name__)
 
-# Мы больше не создаем пул сразу, а просто объявляем переменную
 _process_pool_executor = None
 
 def get_process_pool_executor() -> ProcessPoolExecutor:

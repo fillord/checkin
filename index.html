@@ -7,7 +7,7 @@
     <!-- Используем простой и красивый CSS фреймворк Pico.css для стилей -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
-        /* Общие стили */
+        /* Общие стили для улучшения читаемости */
         body {
             font-size: 16px;
         }
@@ -25,6 +25,7 @@
             --pico-font-size: 0.85em; 
             --pico-padding: 0.3em 0.6em;
             margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
         }
         .delete-btn { 
             background-color: var(--pico-color-red-500); 
@@ -40,6 +41,23 @@
             max-height: 80vh; 
             overflow-y: auto; 
         }
+
+        /* Стили для сортировки */
+        th[data-sort] {
+            cursor: pointer;
+            user-select: none;
+        }
+        th[data-sort]:hover {
+            background-color: var(--pico-hocus-background-color);
+        }
+        th.sort-asc::after {
+            content: ' ▲';
+            font-size: 0.8em;
+        }
+        th.sort-desc::after {
+            content: ' ▼';
+            font-size: 0.8em;
+        }
     </style>
 </head>
 <body>
@@ -52,12 +70,15 @@
 
             <details open>
                 <summary><strong>Список сотрудников</strong></summary>
+                
+                <input type="search" id="search-input" name="search" placeholder="Поиск по ФИО...">
+                
                 <div id="loading-employees" aria-busy="true">Загрузка данных...</div>
                 <table id="employees-table" style="display: none;">
                     <thead>
                         <tr>
-                            <th>ID</th>
-                            <th>ФИО</th>
+                            <th data-sort="telegram_id">ID</th>
+                            <th data-sort="full_name" class="sort-asc">ФИО</th>
                             <th>Действия</th>
                         </tr>
                     </thead>
@@ -65,7 +86,6 @@
                 </table>
             </details>
             
-            <!-- ИСПРАВЛЕНИЕ: Добавлен атрибут 'open', чтобы раздел был открыт по умолчанию -->
             <details open>
                 <summary><strong>Сводный отчет за месяц</strong></summary>
                 <form id="report-form">
@@ -123,6 +143,14 @@
     <script>
         const tg = window.Telegram.WebApp;
 
+        // Глобальное состояние для поиска и сортировки
+        let viewState = {
+            searchQuery: '',
+            sortBy: 'full_name',
+            sortOrder: 'asc'
+        };
+        let debounceTimer;
+
         // --- ОБЩАЯ ЛОГИКА ---
         document.addEventListener('DOMContentLoaded', () => {
             tg.ready();
@@ -134,7 +162,6 @@
                 document.body.innerHTML = '<main class="container"><h1>Доступ запрещен.</h1><p>Пожалуйста, откройте эту панель через вашего Telegram-бота.</p></main>';
                 return;
             }
-            // Для отладки в браузере закомментируйте блок fetch и раскомментируйте initializePage()
             fetch('/api/validate_user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -152,14 +179,17 @@
                 console.error('Validation Error:', error);
                 document.body.innerHTML = `<main class="container"><h1>Ошибка авторизации</h1><p>${error.message}</p></main>`;
             });
-            // initializePage(); // Раскомментируйте для отладки в браузере
         }
         
         function initializePage() {
             loadEmployees();
             setupDateSelector();
+            
+            // --- РЕГИСТРАЦИЯ ВСЕХ ОБРАБОТЧИКОВ ---
+            document.getElementById('search-input').addEventListener('input', handleSearchInput);
+            document.querySelector('#employees-table thead').addEventListener('click', handleSortClick);
+            document.getElementById('employees-tbody').addEventListener('click', handleEmployeeActionClick);
             document.getElementById('report-form').addEventListener('submit', handleReportFormSubmit);
-            document.getElementById('employees-tbody').addEventListener('click', handleEmployeeAction);
             document.getElementById('leave-form').addEventListener('submit', handleLeaveFormSubmit);
             document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => e.target.closest('form').requestSubmit(e.target));
             document.addEventListener('click', (e) => {
@@ -170,7 +200,40 @@
             });
         }
 
-        // --- ЛОГИКА СПИСКА СОТРУДНИКОВ ---
+        // --- ПОИСК И СОРТИРОВКА ---
+        function handleSearchInput(event) {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                viewState.searchQuery = event.target.value;
+                loadEmployees();
+            }, 350);
+        }
+
+        function handleSortClick(event) {
+            const header = event.target.closest('th');
+            if (header && header.dataset.sort) {
+                const newSortBy = header.dataset.sort;
+                if (viewState.sortBy === newSortBy) {
+                    viewState.sortOrder = viewState.sortOrder === 'asc' ? 'desc' : 'asc';
+                } else {
+                    viewState.sortBy = newSortBy;
+                    viewState.sortOrder = 'asc';
+                }
+                loadEmployees();
+            }
+        }
+
+        function updateSortIndicators() {
+            document.querySelectorAll('#employees-table th[data-sort]').forEach(th => {
+                th.classList.remove('sort-asc', 'sort-desc');
+            });
+            const activeHeader = document.querySelector(`#employees-table th[data-sort="${viewState.sortBy}"]`);
+            if (activeHeader) {
+                activeHeader.classList.add(viewState.sortOrder === 'asc' ? 'sort-asc' : 'sort-desc');
+            }
+        }
+
+        // --- СПИСОК СОТРУДНИКОВ ---
         function loadEmployees() {
             const loadingDiv = document.getElementById('loading-employees');
             const table = document.getElementById('employees-table');
@@ -178,7 +241,16 @@
             loadingDiv.style.display = 'block';
             table.style.display = 'none';
 
-            fetch('/api/employees')
+            const params = new URLSearchParams({
+                sort_by: viewState.sortBy,
+                sort_order: viewState.sortOrder
+            });
+            if (viewState.searchQuery) {
+                params.append('q', viewState.searchQuery);
+            }
+            const apiUrl = `/api/employees?${params.toString()}`;
+
+            fetch(apiUrl)
                 .then(response => response.json())
                 .then(data => {
                     loadingDiv.style.display = 'none';
@@ -197,14 +269,14 @@
                         `;
                         tbody.appendChild(row);
                     });
+                    updateSortIndicators();
                 })
                 .catch(error => {
                     loadingDiv.textContent = 'Ошибка загрузки сотрудников!';
                 });
         }
         
-        // ИСПРАВЛЕНИЕ: Функция обработки всех кнопок в таблице
-        function handleEmployeeAction(event) {
+        function handleEmployeeActionClick(event) {
             const targetButton = event.target.closest('button');
             if (!targetButton) return;
 
@@ -217,9 +289,8 @@
                     deactivateEmployee(employeeId, targetButton);
                 }
             } else if (action === 'manage-leave') {
-                const employeeNameForModal = targetButton.dataset.name;
                 const modal = document.getElementById('leave-modal');
-                document.getElementById('leave-modal-header').textContent = `Отсутствие: ${employeeNameForModal}`;
+                document.getElementById('leave-modal-header').textContent = `Отсутствие: ${employeeName}`;
                 document.getElementById('leave-employee-id').value = employeeId;
                 modal.showModal();
             }
@@ -237,7 +308,7 @@
                 if (!response.ok) throw new Error('Ошибка сервера');
                 return response.json();
             })
-            .then(() => loadEmployees()) // Просто перезагружаем список
+            .then(() => loadEmployees())
             .catch(error => {
                 alert(`Не удалось деактивировать: ${error.message}`);
                 button.removeAttribute('aria-busy');
@@ -245,7 +316,7 @@
             });
         }
 
-        // --- ЛОГИКА УПРАВЛЕНИЯ ОТСУТСТВИЯМИ ---
+        // --- УПРАВЛЕНИЕ ОТСУТСТВИЯМИ ---
         function handleLeaveFormSubmit(event) {
             event.preventDefault();
             const actionButton = event.submitter;
@@ -294,12 +365,7 @@
             });
         }
         
-        // --- ЛОГИКА ОТЧЕТА (без изменений) ---
-        function setupDateSelector() { /* ... */ }
-        function handleReportFormSubmit(event) { /* ... */ }
-        function renderReportTable(reportData) { /* ... */ }
-
-        // Помещаем реализацию функций для отчета сюда, чтобы не дублировать
+        // --- ОТЧЕТЫ ---
         function setupDateSelector() {
             const monthSelect = document.getElementById('month-select');
             const yearSelect = document.getElementById('year-select');
