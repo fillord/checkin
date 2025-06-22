@@ -4,25 +4,46 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Админ-панель</title>
+    <!-- Используем простой и красивый CSS фреймворк Pico.css для стилей -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
+        /* Общие стили */
+        body {
+            font-size: 16px;
+        }
+        main {
+            padding-bottom: 2rem;
+        }
+        /* Стили для статусов в таблице отчета */
         .status-late { background-color: #a66a00; }
         .status-absent { background-color: #b82525; }
         .status-leave { background-color: #3e65a3; }
-        #report-container { overflow-x: auto; }
+        #report-container { overflow-x: auto; } /* Прокрутка для широких таблиц */
+
+        /* Стили для кнопок действий */
+        .action-btn { 
+            --pico-font-size: 0.85em; 
+            --pico-padding: 0.3em 0.6em;
+            margin-right: 0.5rem;
+        }
         .delete-btn { 
-            --pico-font-size: 0.8em; 
-            --pico-padding: 0.2em 0.5em;
-            background-color: var(--pico-color-red-500);
+            background-color: var(--pico-color-red-500); 
             border-color: var(--pico-color-red-550);
         }
-        .delete-btn:hover {
-            background-color: var(--pico-color-red-600);
-            border-color: var(--pico-color-red-650);
+        .delete-btn:hover { 
+            background-color: var(--pico-color-red-600); 
+            border-color: var(--pico-color-red-650); 
+        }
+
+        /* Стили для модального окна */
+        .modal-body { 
+            max-height: 80vh; 
+            overflow-y: auto; 
         }
     </style>
 </head>
 <body>
+    <!-- Этот div скрывает контент до успешной авторизации -->
     <div id="main-content" style="visibility: hidden;">
         <main class="container">
             <header>
@@ -33,12 +54,19 @@
                 <summary><strong>Список сотрудников</strong></summary>
                 <div id="loading-employees" aria-busy="true">Загрузка данных...</div>
                 <table id="employees-table" style="display: none;">
-                    <thead><tr><th>ID</th><th>ФИО</th><th>Действия</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>ФИО</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
                     <tbody id="employees-tbody"></tbody>
                 </table>
             </details>
             
-            <details open> 
+            <!-- ИСПРАВЛЕНИЕ: Добавлен атрибут 'open', чтобы раздел был открыт по умолчанию -->
+            <details open>
                 <summary><strong>Сводный отчет за месяц</strong></summary>
                 <form id="report-form">
                     <div class="grid">
@@ -47,34 +75,66 @@
                         <button type="submit">Сформировать</button>
                     </div>
                 </form>
-                
                 <div id="report-container" style="margin-top: 1rem;">
                     <div id="report-loading" aria-busy="true" style="display: none;">Формирование отчета...</div>
                     <div id="report-error" style="color: var(--pico-color-red); display: none;"></div>
                     <table id="report-table"></table>
                 </div>
             </details>
-            
         </main>
     </div>
+
+    <!-- МОДАЛЬНОЕ ОКНО ДЛЯ УПРАВЛЕНИЯ ОТСУТСТВИЯМИ -->
+    <dialog id="leave-modal">
+        <article class="modal-body">
+            <header>
+                <a href="#close" aria-label="Close" class="close" data-target="leave-modal"></a>
+                <strong id="leave-modal-header">Управление отсутствием</strong>
+            </header>
+            <form id="leave-form">
+                <input type="hidden" id="leave-employee-id">
+                <label for="leave-type">Тип отсутствия</label>
+                <select id="leave-type" required>
+                    <option value="Отпуск">Отпуск</option>
+                    <option value="Больничный">Больничный</option>
+                </select>
+                <div class="grid">
+                    <label for="start-date">
+                        Начало периода
+                        <input type="date" id="start-date" required>
+                    </label>
+                    <label for="end-date">
+                        Конец периода
+                        <input type="date" id="end-date" required>
+                    </label>
+                </div>
+                <p id="leave-error" style="color: var(--pico-color-red); display: none;"></p>
+                <footer>
+                    <div class="grid">
+                        <button type="submit" data-action="add-leave">✅ Назначить</button>
+                        <button type="button" class="secondary" data-action="cancel-leave">🚫 Отменить за период</button>
+                    </div>
+                </footer>
+            </form>
+        </article>
+    </dialog>
+
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
         const tg = window.Telegram.WebApp;
 
+        // --- ОБЩАЯ ЛОГИКА ---
         document.addEventListener('DOMContentLoaded', () => {
-            tg.ready(); // Сообщаем Telegram, что приложение готово
-            
-            // Сразу после загрузки страницы проверяем авторизацию
+            tg.ready();
             validateUser();
         });
 
         function validateUser() {
-            // Проверяем, есть ли initData (т.е. открыто ли приложение через Telegram)
             if (!tg.initData) {
                 document.body.innerHTML = '<main class="container"><h1>Доступ запрещен.</h1><p>Пожалуйста, откройте эту панель через вашего Telegram-бота.</p></main>';
                 return;
             }
-
+            // Для отладки в браузере закомментируйте блок fetch и раскомментируйте initializePage()
             fetch('/api/validate_user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -84,8 +144,7 @@
                 if (!response.ok) throw new Error('Авторизация не пройдена!');
                 return response.json();
             })
-            .then(result => {
-                // Если авторизация успешна, показываем основной контент и загружаем данные
+            .then(() => {
                 document.getElementById('main-content').style.visibility = 'visible';
                 initializePage();
             })
@@ -93,22 +152,29 @@
                 console.error('Validation Error:', error);
                 document.body.innerHTML = `<main class="container"><h1>Ошибка авторизации</h1><p>${error.message}</p></main>`;
             });
+            // initializePage(); // Раскомментируйте для отладки в браузере
         }
         
         function initializePage() {
-            // Эта функция выполняется только ПОСЛЕ успешной авторизации
             loadEmployees();
             setupDateSelector();
             document.getElementById('report-form').addEventListener('submit', handleReportFormSubmit);
             document.getElementById('employees-tbody').addEventListener('click', handleEmployeeAction);
+            document.getElementById('leave-form').addEventListener('submit', handleLeaveFormSubmit);
+            document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => e.target.closest('form').requestSubmit(e.target));
+            document.addEventListener('click', (e) => {
+                if(e.target.matches("#leave-modal .close")) {
+                    e.preventDefault();
+                    document.getElementById(e.target.dataset.target).close();
+                }
+            });
         }
 
-        // --- ЛОГИКА ДЛЯ СПИСКА СОТРУДНИКОВ ---
+        // --- ЛОГИКА СПИСКА СОТРУДНИКОВ ---
         function loadEmployees() {
             const loadingDiv = document.getElementById('loading-employees');
             const table = document.getElementById('employees-table');
             const tbody = document.getElementById('employees-tbody');
-
             loadingDiv.style.display = 'block';
             table.style.display = 'none';
 
@@ -125,9 +191,8 @@
                             <td>${employee.id}</td>
                             <td>${employee.full_name}</td>
                             <td>
-                                <button class="delete-btn" data-action="deactivate" data-id="${employee.id}">
-                                    Удалить
-                                </button>
+                                <button class="action-btn" data-action="manage-leave" data-id="${employee.id}" data-name="${employee.full_name}">Отсутствие</button>
+                                <button class="action-btn delete-btn" data-action="deactivate" data-id="${employee.id}">Удалить</button>
                             </td>
                         `;
                         tbody.appendChild(row);
@@ -135,51 +200,106 @@
                 })
                 .catch(error => {
                     loadingDiv.textContent = 'Ошибка загрузки сотрудников!';
-                    console.error('Error fetching employees:', error);
                 });
         }
         
-        // ИСПРАВЛЕНИЕ: Полностью переписана функция для корректной работы
+        // ИСПРАВЛЕНИЕ: Функция обработки всех кнопок в таблице
         function handleEmployeeAction(event) {
             const targetButton = event.target.closest('button');
-            if (!targetButton || targetButton.dataset.action !== 'deactivate') {
+            if (!targetButton) return;
+
+            const action = targetButton.dataset.action;
+            const employeeId = targetButton.dataset.id;
+            const employeeName = targetButton.closest('tr').cells[1].textContent;
+
+            if (action === 'deactivate') {
+                if (confirm(`Вы уверены, что хотите деактивировать сотрудника ${employeeName}?`)) {
+                    deactivateEmployee(employeeId, targetButton);
+                }
+            } else if (action === 'manage-leave') {
+                const employeeNameForModal = targetButton.dataset.name;
+                const modal = document.getElementById('leave-modal');
+                document.getElementById('leave-modal-header').textContent = `Отсутствие: ${employeeNameForModal}`;
+                document.getElementById('leave-employee-id').value = employeeId;
+                modal.showModal();
+            }
+        }
+        
+        function deactivateEmployee(id, button) {
+            button.setAttribute('aria-busy', 'true');
+            button.disabled = true;
+            fetch('/api/employees/deactivate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: parseInt(id) })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Ошибка сервера');
+                return response.json();
+            })
+            .then(() => loadEmployees()) // Просто перезагружаем список
+            .catch(error => {
+                alert(`Не удалось деактивировать: ${error.message}`);
+                button.removeAttribute('aria-busy');
+                button.disabled = false;
+            });
+        }
+
+        // --- ЛОГИКА УПРАВЛЕНИЯ ОТСУТСТВИЯМИ ---
+        function handleLeaveFormSubmit(event) {
+            event.preventDefault();
+            const actionButton = event.submitter;
+            const action = actionButton.dataset.action;
+            const apiUrl = (action === 'add-leave') ? '/api/leaves/add' : '/api/leaves/cancel';
+            const errorDiv = document.getElementById('leave-error');
+
+            const requestBody = {
+                employee_id: parseInt(document.getElementById('leave-employee-id').value),
+                leave_type: document.getElementById('leave-type').value,
+                start_date: document.getElementById('start-date').value,
+                end_date: document.getElementById('end-date').value
+            };
+
+            if (!requestBody.start_date || !requestBody.end_date) {
+                errorDiv.textContent = 'Ошибка: Пожалуйста, выберите начальную и конечную дату.';
+                errorDiv.style.display = 'block';
                 return;
             }
 
-            const employeeId = targetButton.dataset.id;
-            const employeeRow = targetButton.closest('tr');
-            const employeeName = employeeRow.cells[1].textContent;
+            actionButton.setAttribute('aria-busy', 'true');
+            actionButton.disabled = true;
+            errorDiv.style.display = 'none';
 
-            if (confirm(`Вы уверены, что хотите деактивировать сотрудника ${employeeName}?`)) {
-                targetButton.setAttribute('aria-busy', 'true');
-                targetButton.disabled = true;
-
-                fetch('/api/employees/deactivate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: parseInt(employeeId) })
-                })
-                .then(response => {
-                    if (!response.ok) throw new Error('Ошибка сервера при деактивации');
-                    return response.json();
-                })
-                .then(result => {
-                    if (result.status === 'success') {
-                        // Просто перезагружаем список сотрудников, чтобы он был актуальным
-                        loadEmployees(); 
-                    } else {
-                        throw new Error(result.message || 'Неизвестная ошибка');
-                    }
-                })
-                .catch(error => {
-                    alert(`Не удалось деактивировать сотрудника: ${error.message}`);
-                    targetButton.removeAttribute('aria-busy');
-                    targetButton.disabled = false;
-                });
-            }
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => {
+                if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Неизвестная ошибка сервера') });
+                return response.json();
+            })
+            .then(result => {
+                alert(`Успешно: ${result.message}`);
+                document.getElementById('leave-modal').close();
+                document.getElementById('leave-form').reset();
+            })
+            .catch(error => {
+                errorDiv.textContent = `Ошибка: ${error.message}`;
+                errorDiv.style.display = 'block';
+            })
+            .finally(() => {
+                actionButton.removeAttribute('aria-busy');
+                actionButton.disabled = false;
+            });
         }
         
-        // --- ЛОГИКА ДЛЯ ОТЧЕТА (без изменений) ---
+        // --- ЛОГИКА ОТЧЕТА (без изменений) ---
+        function setupDateSelector() { /* ... */ }
+        function handleReportFormSubmit(event) { /* ... */ }
+        function renderReportTable(reportData) { /* ... */ }
+
+        // Помещаем реализацию функций для отчета сюда, чтобы не дублировать
         function setupDateSelector() {
             const monthSelect = document.getElementById('month-select');
             const yearSelect = document.getElementById('year-select');
@@ -224,7 +344,6 @@
                     loadingDiv.style.display = 'none';
                     errorDiv.textContent = `Не удалось загрузить отчет: ${error.message}`;
                     errorDiv.style.display = 'block';
-                    console.error('Error fetching report:', error);
                 });
         }
 
@@ -246,7 +365,6 @@
                 rowData.forEach((cellData, index) => {
                     const cell = document.createElement('td');
                     cell.textContent = cellData;
-                    
                     if (index > 0) {
                         const status = cellData.toLowerCase();
                         if (status.includes('опоздал')) cell.className = 'status-late';

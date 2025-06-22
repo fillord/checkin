@@ -8,7 +8,8 @@ import urllib.parse
 import hmac
 import hashlib
 import json
-
+from datetime import date # Убедитесь, что date импортирован
+from database import add_leave_period, cancel_leave_period
 # Импортируем наши модули
 import config
 import database # <-- Теперь мы импортируем наш основной модуль для работы с БД
@@ -28,6 +29,12 @@ class DeactivateRequest(BaseModel):
 
 class AuthRequest(BaseModel):
     initData: str
+
+class LeaveRequest(BaseModel):
+    employee_id: int
+    leave_type: str
+    start_date: date
+    end_date: date
 
 # --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
@@ -59,6 +66,36 @@ async def deactivate_employee(request: DeactivateRequest):
         logger.error(f"Ошибка при деактивации сотрудника {request.id} через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка на сервере при деактивации сотрудника.")
 
+# webapp.py
+
+@app.post("/api/leaves/add")
+async def add_leave(request: LeaveRequest):
+    """Назначает сотруднику период отсутствия."""
+    try:
+        await add_leave_period(
+            telegram_id=request.employee_id,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            leave_type=request.leave_type
+        )
+        return {"status": "success", "message": "Период отсутствия успешно добавлен."}
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении периода отсутствия через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
+
+@app.post("/api/leaves/cancel")
+async def cancel_leave(request: LeaveRequest):
+    """Отменяет период отсутствия для сотрудника."""
+    try:
+        rows_deleted = await cancel_leave_period(
+            telegram_id=request.employee_id,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+        return {"status": "success", "message": f"Записи об отсутствии удалены ({rows_deleted} шт.)"}
+    except Exception as e:
+        logger.error(f"Ошибка при отмене периода отсутствия через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
 
 @app.get("/api/reports/monthly/{year}/{month}")
 async def get_monthly_report(year: int, month: int):
