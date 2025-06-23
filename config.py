@@ -16,10 +16,18 @@ WORK_LOCATION_COORDS = (43.25835460134987, 76.88279745482673)
 ALLOWED_RADIUS_METERS = 200
 FACE_DISTANCE_THRESHOLD_CHECKIN = 0.6
 FACE_DISTANCE_THRESHOLD_UPDATE = 0.75
-DB_USER = "checkin_user"
-DB_PASSWORD = "Jfl@2386"
-DB_NAME = "checkin_bot_db"
-DB_HOST = "127.0.0.1"
+DB_USER = os.getenv("DB_USER")
+if not DB_USER:
+    raise ValueError("Не найден DB_USER в файле .env.")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+if not DB_PASSWORD:
+    raise ValueError("Не найден DB_PASSWORD в файле .env.")
+DB_NAME = os.getenv("DB_NAME")
+if not DB_NAME:
+    raise ValueError("Не найден DB_NAME в файле .env.")
+DB_HOST = os.getenv("DB_HOST")
+if not DB_HOST:
+    raise ValueError("Не найден DB_HOST в файле .env.")
 PERSISTENCE_FILE = "bot_persistence.pickle"
 
 # --- Состояния для диалогов ---
