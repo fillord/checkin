@@ -5,6 +5,7 @@
 bot_persistence.pickle
 *.db
 *.sqlite3
+checkin_bot_db
 
 # Папки с виртуальным окружением
 venv/
