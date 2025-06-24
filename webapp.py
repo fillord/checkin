@@ -6,13 +6,14 @@ import hashlib
 import json
 import config
 import database
+import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, field_validator
+from typing import Dict, List, Optional
 
-from datetime import date
+from datetime import date, time
 from database import add_leave_period, cancel_leave_period
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,28 @@ class LeaveRequest(BaseModel):
     leave_type: str
     start_date: date
     end_date: date
+
+
+# --- НОВАЯ МОДЕЛЬ для добавления/редактирования сотрудника ---
+class ScheduleData(BaseModel):
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+class EmployeeUpdateRequest(BaseModel):
+    telegram_id: int
+    full_name: str
+    effective_date: date
+    schedule: Dict[str, ScheduleData] # График будет словарем: "0" (Пн) -> {"start": "09:00", "end": "18:00"}
+
+    @field_validator('schedule')
+    def validate_schedule_times(cls, v):
+        time_pattern = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+        for day, times in v.items():
+            if times.start or times.end: # Если это не выходной
+                if not (times.start and times.end and time_pattern.match(times.start) and time_pattern.match(times.end)):
+                    raise ValueError(f"Неверный формат времени для дня {day}. Используйте ЧЧ:ММ.")
+        return v
+# --- КОНЕЦ НОВОЙ МОДЕЛИ ---
 
 # --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
@@ -59,6 +82,37 @@ async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_
         logger.error(f"Ошибка при получении списка сотрудников через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
+
+# --- НОВЫЙ ЭНДПОИНТ для добавления сотрудника ---
+@app.post("/api/employees/add")
+async def add_employee(request: EmployeeUpdateRequest):
+    """Добавляет нового сотрудника и его график."""
+    try:
+        # Преобразуем schedule из строк в объекты time для функции БД
+        schedule_for_db = {}
+        for day_index_str, times in request.schedule.items():
+            day_index = int(day_index_str)
+            if times.start and times.end:
+                schedule_for_db[day_index] = {
+                    "start": time.fromisoformat(times.start),
+                    "end": time.fromisoformat(times.end)
+                }
+            else:
+                schedule_for_db[day_index] = {} # Выходной
+
+        await database.add_or_update_employee(
+            telegram_id=request.telegram_id,
+            full_name=request.full_name,
+            schedule_data=schedule_for_db,
+            effective_date=request.effective_date
+        )
+        logger.info(f"Сотрудник {request.full_name} ({request.telegram_id}) добавлен через веб-интерфейс.")
+        return {"status": "success", "message": "Сотрудник успешно добавлен."}
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении сотрудника через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера при добавлении: {e}")
+# --- КОНЕЦ НОВОГО ЭНДПОИНТА ---
+
 @app.post("/api/employees/deactivate")
 async def deactivate_employee(request: DeactivateRequest):
     """Деактивирует сотрудника по его ID, используя database.py."""
@@ -74,7 +128,7 @@ async def deactivate_employee(request: DeactivateRequest):
 async def add_leave(request: LeaveRequest):
     """Назначает сотруднику период отсутствия."""
     try:
-        await add_leave_period(
+        await database.add_leave_period(
             telegram_id=request.employee_id,
             start_date=request.start_date,
             end_date=request.end_date,
@@ -89,7 +143,7 @@ async def add_leave(request: LeaveRequest):
 async def cancel_leave(request: LeaveRequest):
     """Отменяет период отсутствия для сотрудника."""
     try:
-        rows_deleted = await cancel_leave_period(
+        rows_deleted = await database.cancel_leave_period(
             telegram_id=request.employee_id,
             start_date=request.start_date,
             end_date=request.end_date

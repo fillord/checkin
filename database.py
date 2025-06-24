@@ -10,6 +10,50 @@ from config import DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, LOCAL_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
+# --- Вспомогательная функция для создания комбинированного статуса ---
+def _build_composite_status(status_list: list, is_work_day: bool, is_past_date: bool) -> str:
+    """
+    Создает детализированную строку статуса на основе списка всех событий за день.
+    """
+    if not is_work_day:
+        return "Выходной"
+
+    # Статусы, которые определяют весь день, имеют наивысший приоритет.
+    if 'VACATION' in status_list:
+        return 'Отпуск'
+    if 'SICK_LEAVE' in status_list:
+        return 'Больничный'
+
+    # Определяем статус прихода
+    arrival_status = ""
+    if 'LATE' in status_list:
+        arrival_status = "Опоздал"
+    elif 'SUCCESS' in status_list:
+        arrival_status = "Вовремя"
+    
+    # Если сотрудник не пришел на работу
+    if not arrival_status:
+        if is_past_date:
+            return "Пропустил"  # День прошел, а сотрудника не было
+        else:
+            return "—"  # Будущий рабочий день
+
+    # Определяем статус ухода или завершения дня
+    departure_status = ""
+    if 'APPROVED_LEAVE' in status_list:
+        departure_status = "Отпросился"
+    # Статус "не завершил день" добавляется, если не было явного ухода пораньше
+    elif 'ABSENT_INCOMPLETE' in status_list:
+        departure_status = "Не завершил день"
+
+    # Собираем итоговую строку
+    final_parts = [arrival_status]
+    if departure_status:
+        final_parts.append(departure_status)
+        
+    return ", ".join(final_parts)
+
+
 async def get_db_connection():
     """
     Устанавливает соединение с базой данных PostgreSQL,
@@ -60,9 +104,22 @@ async def init_db():
                 FOREIGN KEY (employee_telegram_id) REFERENCES employees (telegram_id) ON DELETE CASCADE
             );
         """)
+        # Добавляем таблицу для отпусков/больничных, чтобы не смешивать с check_ins
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS leaves (
+                id SERIAL PRIMARY KEY,
+                employee_telegram_id BIGINT NOT NULL,
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                leave_type TEXT NOT NULL, -- 'VACATION' или 'SICK_LEAVE'
+                FOREIGN KEY (employee_telegram_id) REFERENCES employees (telegram_id) ON DELETE CASCADE
+            );
+        """)
         logger.info("База данных PostgreSQL инициализирована.")
     finally:
         await conn.close()
+
+# ... (остальные функции до get_monthly_summary_data остаются без изменений) ...
 
 async def get_employee_data(telegram_id: int, include_inactive=False) -> dict | None:
     """Получает данные сотрудника из PostgreSQL."""
@@ -231,12 +288,17 @@ async def is_day_finished_for_user(telegram_id: int) -> bool:
     start_of_day_utc = datetime.combine(today_local, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
     end_of_day_utc = datetime.combine(today_local, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
     
-    statuses_to_check = ('SUCCESS', 'APPROVED_LEAVE', 'VACATION', 'SICK_LEAVE')
-    
     conn = await get_db_connection()
     try:
-        # Используем конструкцию `status = ANY($3)` для безопасной передачи списка статусов
-        query = """
+        # Сначала проверяем отпуска/больничные
+        leave_query = "SELECT 1 FROM leaves WHERE employee_telegram_id = $1 AND start_date <= $2 AND end_date >= $2 LIMIT 1"
+        is_on_leave = await conn.fetchval(leave_query, telegram_id, today_local)
+        if is_on_leave:
+            return True
+
+        # Затем проверяем чекины
+        statuses_to_check = ('SUCCESS', 'APPROVED_LEAVE')
+        checkin_query = """
             SELECT 1 FROM check_ins 
             WHERE employee_telegram_id = $1
               AND (check_in_type = 'DEPARTURE' OR check_in_type = 'SYSTEM_LEAVE')
@@ -244,9 +306,9 @@ async def is_day_finished_for_user(telegram_id: int) -> bool:
               AND timestamp BETWEEN $3 AND $4
             LIMIT 1
         """
-        # Передаем параметры в правильном порядке для $1, $2, $3, $4
-        row = await conn.fetchrow(query, telegram_id, list(statuses_to_check), start_of_day_utc, end_of_day_utc)
-        return row is not None
+        has_departed = await conn.fetchval(checkin_query, telegram_id, list(statuses_to_check), start_of_day_utc, end_of_day_utc)
+        
+        return has_departed is not None
     finally:
         await conn.close()
 
@@ -353,37 +415,21 @@ async def override_as_absent(telegram_id: int, for_date: date):
         await conn.close()
 
 async def add_leave_period(telegram_id: int, start_date: date, end_date: date, leave_type: str):
-    """
-    Добавляет записи об отпуске/больничном для сотрудника на заданный период,
-    покрывая ВСЕ дни в периоде, включая выходные.
-    """
+    """Добавляет записи об отпуске/больничном в отдельную таблицу 'leaves'."""
     conn = await get_db_connection()
     try:
-        leave_status = 'VACATION' if leave_type == 'Отпуск' else 'SICK_LEAVE'
+        # Убедимся, что тип отпуска соответствует ожидаемым значениям
+        leave_status = 'VACATION' if 'отпуск' in leave_type.lower() else 'SICK_LEAVE'
         
-        # Используем транзакцию, чтобы все записи добавились как единое целое
-        async with conn.transaction():
-            # Проходим по каждому дню в указанном пользователем диапазоне
-            for current_date in (start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)):
-                
-                # Определяем начало и конец этого дня в UTC для точного поиска
-                start_of_day_utc = datetime.combine(current_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
-                end_of_day_utc = datetime.combine(current_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
-
-                # Сначала удаляем любые предыдущие отметки об отпуске/больничном за этот день, чтобы избежать дублей
-                await conn.execute(
-                    "DELETE FROM check_ins WHERE employee_telegram_id = $1 AND check_in_type = 'SYSTEM_LEAVE' AND timestamp BETWEEN $2 AND $3",
-                    telegram_id, start_of_day_utc, end_of_day_utc
-                )
-                
-                # Теперь вставляем новую, правильную отметку в конец дня
-                timestamp_to_insert = end_of_day_utc
-                await conn.execute(
-                    "INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status) VALUES ($1, $2, $3, $4)",
-                    timestamp_to_insert, telegram_id, 'SYSTEM_LEAVE', leave_status
-                )
-
-        logger.info(f"Для сотрудника {telegram_id} назначен(а) {leave_type} с {start_date} по {end_date} (включая выходные).")
+        # Просто вставляем одну запись на весь период. Это гораздо эффективнее.
+        await conn.execute(
+            """
+            INSERT INTO leaves (employee_telegram_id, start_date, end_date, leave_type)
+            VALUES ($1, $2, $3, $4)
+            """,
+            telegram_id, start_date, end_date, leave_status
+        )
+        logger.info(f"Для сотрудника {telegram_id} назначен(а) {leave_type} с {start_date} по {end_date}.")
     finally:
         await conn.close()
 
@@ -419,16 +465,30 @@ async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
         all_employees = {row['telegram_id']: row['full_name'] for row in emp_rows}
         
         # Получаем все события за период
-        event_rows = await conn.fetch("SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE timestamp BETWEEN $1 AND $2", start_dt_utc, end_dt_utc)
+        event_rows = await conn.fetch(
+            "SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE timestamp BETWEEN $1 AND $2", 
+            start_dt_utc, end_dt_utc
+        )
         
-        events_by_date = defaultdict(dict)
+        # Группируем события по дате и сотруднику
+        events_by_day = defaultdict(lambda: defaultdict(list))
         for row in event_rows:
             local_date = row['timestamp'].astimezone(LOCAL_TIMEZONE).date()
-            # Устанавливаем статус, отдавая приоритет системным отметкам о прогуле
-            if row['status'] == 'ABSENT_INCOMPLETE':
-                events_by_date[local_date][row['employee_telegram_id']] = 'ABSENT_INCOMPLETE'
-            elif row['employee_telegram_id'] not in events_by_date.get(local_date, {}):
-                events_by_date[local_date][row['employee_telegram_id']] = row['status']
+            events_by_day[local_date][row['employee_telegram_id']].append(row['status'])
+
+        # Получаем все отпуска/больничные за период
+        leaves_rows = await conn.fetch(
+            "SELECT employee_telegram_id, start_date, end_date, leave_type FROM leaves WHERE start_date <= $1 AND end_date >= $2",
+            end_date, start_date
+        )
+        leaves_by_day = defaultdict(lambda: defaultdict(str))
+        for row in leaves_rows:
+            current_date = row['start_date']
+            while current_date <= row['end_date']:
+                if start_date <= current_date <= end_date:
+                    leaves_by_day[current_date][row['employee_telegram_id']] = row['leave_type']
+                current_date += timedelta(days=1)
+        
 
         # Проверяем график для каждого дня индивидуально
         for current_date in (start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)):
@@ -437,19 +497,23 @@ async def get_report_stats_for_period(start_date: date, end_date: date) -> dict:
                 
                 if schedule_for_day: # Если день был рабочим
                     stats['total_work_days'] += 1
-                    status = events_by_date.get(current_date, {}).get(emp_id)
                     
-                    if status in ('VACATION', 'SICK_LEAVE', 'APPROVED_LEAVE'):
-                        continue 
-                    elif status == 'ABSENT_INCOMPLETE' or status is None:
-                        if current_date <= datetime.now(LOCAL_TIMEZONE).date():
-                           stats['absences'][name].append(current_date.strftime('%d.%m'))
-                    elif status == 'LATE':
+                    # Проверяем отпуск/больничный
+                    if leaves_by_day.get(current_date, {}).get(emp_id):
+                        continue
+
+                    day_events = events_by_day.get(current_date, {}).get(emp_id, [])
+                    
+                    if 'LATE' in day_events:
                         stats['total_arrivals'] += 1
                         stats['total_lates'] += 1
                         stats['late_employees'][name].append(current_date.strftime('%d.%m'))
-                    elif status == 'SUCCESS':
+                    elif 'SUCCESS' in day_events:
                         stats['total_arrivals'] += 1
+                    else: # Не было прихода
+                        if current_date < datetime.now(LOCAL_TIMEZONE).date():
+                            stats['absences'][name].append(current_date.strftime('%d.%m'))
+
     finally:
         await conn.close()
     return stats
@@ -458,67 +522,66 @@ async def cancel_leave_period(telegram_id: int, start_date: date, end_date: date
     """Удаляет записи об отпуске/больничном для сотрудника на заданный период в PostgreSQL."""
     conn = await get_db_connection()
     try:
-        start_dt_utc = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
-        end_dt_utc = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
-
-        leave_statuses = ('VACATION', 'SICK_LEAVE', 'APPROVED_LEAVE')
-        
-        query = f"""
-            DELETE FROM check_ins 
+        # Удаляем все периоды, которые ПЕРЕСЕКАЮТСЯ с заданным диапазоном
+        query = """
+            DELETE FROM leaves 
             WHERE employee_telegram_id = $1 
-            AND status = ANY($2)
-            AND timestamp BETWEEN $3 AND $4
+            AND start_date <= $2 AND end_date >= $3
         """
-        # asyncpg.execute возвращает строку статуса, например "DELETE 5"
-        status_str = await conn.execute(query, telegram_id, list(leave_statuses), start_dt_utc, end_dt_utc)
-        
-        # Извлекаем количество удаленных строк из статуса
+        status_str = await conn.execute(query, telegram_id, end_date, start_date)
         rows_deleted = int(status_str.split()[-1])
-        
         logger.info(f"Для сотрудника {telegram_id} отменено отсутствие с {start_date} по {end_date}. Удалено записей: {rows_deleted}")
         return rows_deleted
     finally:
         await conn.close()
 
+# --- ПОЛНОСТЬЮ ПЕРЕРАБОТАННАЯ ФУНКЦИЯ ---
 async def get_monthly_summary_data(year: int, month: int) -> list[list]:
-    """Собирает и формирует данные для сводного месячного отчета из PostgreSQL."""
+    """Собирает и формирует данные для сводного месячного отчета с КОМБИНИРОВАННЫМИ статусами."""
     conn = await get_db_connection()
     try:
         start_date = date(year, month, 1)
         num_days = calendar.monthrange(year, month)[1]
         end_date = date(year, month, num_days)
+        today = datetime.now(LOCAL_TIMEZONE).date()
     except ValueError:
         logger.error(f"Неверный год или месяц: {year}-{month}")
         await conn.close()
         return []
 
     try:
-        all_employees = {}
-        checkins = defaultdict(dict)
-
+        # 1. Получаем всех активных сотрудников
         emp_rows = await conn.fetch("SELECT telegram_id, full_name FROM employees WHERE is_active = TRUE ORDER BY full_name")
         all_employees = {row['telegram_id']: row['full_name'] for row in emp_rows}
         
+        # 2. Получаем все события чекинов за месяц
         start_dt_utc = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
         end_dt_utc = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
         
-        query = """
-            SELECT employee_telegram_id, timestamp, status FROM check_ins 
-            WHERE timestamp BETWEEN $1 AND $2 
-            ORDER BY CASE status 
-                WHEN 'ABSENT_INCOMPLETE' THEN 1 
-                WHEN 'VACATION' THEN 2
-                WHEN 'SICK_LEAVE' THEN 2
-                WHEN 'APPROVED_LEAVE' THEN 2
-                ELSE 3 
-            END
-        """
+        query = "SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE timestamp BETWEEN $1 AND $2"
         event_rows = await conn.fetch(query, start_dt_utc, end_dt_utc)
+
+        # 3. Группируем все статусы по сотруднику и по дню
+        checkins = defaultdict(lambda: defaultdict(list))
         for row in event_rows:
             local_date_iso = row['timestamp'].astimezone(LOCAL_TIMEZONE).date().isoformat()
-            if row['employee_telegram_id'] not in checkins or local_date_iso not in checkins[row['employee_telegram_id']]:
-                 checkins[row['employee_telegram_id']][local_date_iso] = row['status']
+            checkins[row['employee_telegram_id']][local_date_iso].append(row['status'])
 
+        # 4. Получаем все отпуска и больничные, которые пересекаются с месяцем
+        leaves_rows = await conn.fetch(
+            "SELECT employee_telegram_id, start_date, end_date, leave_type FROM leaves WHERE start_date <= $1 AND end_date >= $2",
+            end_date, start_date
+        )
+        # Добавляем статусы отпусков и больничных в общую структуру
+        for row in leaves_rows:
+            current_date = row['start_date']
+            while current_date <= row['end_date']:
+                if start_date <= current_date <= end_date:
+                     checkins[row['employee_telegram_id']][current_date.isoformat()].append(row['leave_type'])
+                current_date += timedelta(days=1)
+
+
+        # 5. Формируем итоговую таблицу
         header = ["Сотрудник"] + [f"{day:02d}.{month:02d}" for day in range(1, num_days + 1)]
         result_table = [header]
 
@@ -526,31 +589,27 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
             employee_row = [name]
             for day in range(1, num_days + 1):
                 current_date = date(year, month, day)
-                # Передаем соединение conn в нашу вспомогательную функцию
+                
+                # Получаем график на конкретный день
                 schedule_for_day = await get_schedule_for_specific_date(conn, emp_id, current_date)
                 
-                status_str = "Выходной"
-                if schedule_for_day:
-                    final_status = checkins.get(emp_id, {}).get(current_date.isoformat())
-                    
-                    if final_status == 'VACATION': status_str = 'Отпуск'
-                    elif final_status == 'SICK_LEAVE': status_str = 'Больничный'
-                    elif final_status == 'APPROVED_LEAVE': status_str = 'Отпросился'
-                    elif final_status == 'ABSENT_INCOMPLETE': status_str = 'Прогул (нет ухода)'
-                    elif final_status == 'LATE': status_str = 'Опоздал'
-                    elif final_status == 'SUCCESS': status_str = 'Вовремя'
-                    else:
-                        if current_date <= datetime.now(LOCAL_TIMEZONE).date():
-                            status_str = 'Пропустил'
-                        else:
-                            status_str = '—'
+                # Получаем список всех статусов за этот день для сотрудника
+                status_list = checkins.get(emp_id, {}).get(current_date.isoformat(), [])
                 
-                employee_row.append(status_str)
+                # Вызываем новую функцию для создания комбинированного статуса
+                final_status_str = _build_composite_status(
+                    status_list, 
+                    is_work_day=(schedule_for_day is not None),
+                    is_past_date=(current_date <= today)
+                )
+                employee_row.append(final_status_str)
+                
             result_table.append(employee_row)
 
         return result_table
     finally:
         await conn.close()
+# --- КОНЕЦ ПЕРЕРАБОТАННОЙ ФУНКЦИИ ---
 
 async def get_dashboard_stats(for_date: date) -> dict:
     """Собирает оперативную статистику за указанную дату для дашборда из PostgreSQL."""
@@ -566,7 +625,6 @@ async def get_dashboard_stats(for_date: date) -> dict:
     conn = await get_db_connection()
     try:
         # 1. Получаем всех, кто должен работать сегодня, с учетом ВЕРСИИ графика
-        # Этот запрос гарантирует, что мы берем только тех, у кого на for_date действительно рабочий день
         query_employees = """
             WITH latest_schedules AS (
                 SELECT
@@ -590,14 +648,22 @@ async def get_dashboard_stats(for_date: date) -> dict:
         # По умолчанию все, кто должен работать, - прогульщики
         stats['absent'] = scheduled_employees.copy()
 
-        # 2. Получаем все события за сегодня
+        # 2. Получаем все события за сегодня (и чекины, и отпуска)
         start_of_day_utc = datetime.combine(for_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
         end_of_day_utc = datetime.combine(for_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
 
+        # Достаем отпуска
+        leaves_rows = await conn.fetch("SELECT employee_telegram_id, leave_type FROM leaves WHERE start_date <= $1 AND end_date >= $1", for_date)
+        for row in leaves_rows:
+            emp_id = row['employee_telegram_id']
+            if emp_id in scheduled_employees:
+                stats['on_leave'][emp_id] = {'name': scheduled_employees[emp_id], 'status': row['leave_type']}
+                if emp_id in stats['absent']: del stats['absent'][emp_id]
+        
+        # Достаем чекины
         query_events = "SELECT employee_telegram_id, check_in_type, status FROM check_ins WHERE timestamp BETWEEN $1 AND $2"
         event_rows = await conn.fetch(query_events, start_of_day_utc, end_of_day_utc)
 
-        # 3. Распределяем сотрудников по категориям
         arrivals = {}
         departures = set()
         
@@ -607,10 +673,11 @@ async def get_dashboard_stats(for_date: date) -> dict:
             status = row['status']
             
             if emp_id not in scheduled_employees: continue
+            if emp_id in stats['on_leave']: continue # Если в отпуске, игнорируем чекины
 
-            if check_type == 'SYSTEM_LEAVE':
-                stats['on_leave'][emp_id] = {'name': scheduled_employees[emp_id], 'status': status}
-                if emp_id in stats['absent']: del stats['absent'][emp_id]
+            if check_type == 'SYSTEM_LEAVE' and status == 'APPROVED_LEAVE':
+                 # Отпросился - это частный случай ухода, не полного отсутствия
+                 departures.add(emp_id)
             elif check_type == 'ARRIVAL' and status in ('SUCCESS', 'LATE'):
                 arrivals[emp_id] = {'name': scheduled_employees[emp_id], 'status': status}
                 if emp_id in stats['absent']: del stats['absent'][emp_id]
@@ -622,7 +689,7 @@ async def get_dashboard_stats(for_date: date) -> dict:
 
         # 4. Финальная сверка приходов и уходов
         for emp_id, data in arrivals.items():
-            if emp_id in stats['on_leave'] or emp_id in stats['incomplete']:
+            if emp_id in stats['incomplete']:
                 continue 
             
             if emp_id in departures:
