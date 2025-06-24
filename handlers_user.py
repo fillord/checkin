@@ -332,23 +332,32 @@ async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await update.message.reply_text("Геолокация получена. Начинаю проверку...", reply_markup=ReplyKeyboardRemove())
     
-    distance = round(geodesic(WORK_LOCATION_COORDS, (user_location.latitude, user_location.longitude)).meters, 2)
-    if distance > ALLOWED_RADIUS_METERS:
-        await database.log_check_in_attempt(user.id, check_in_type, 'FAIL_LOCATION', user_location.latitude, user_location.longitude, distance)
-        await update.message.reply_text(f"❌ Чек-ин отклонен.\nВы находитесь слишком далеко от рабочего места ({distance} м).", reply_markup=fallback_keyboard)
+    user_coords = (user_location.latitude, user_location.longitude)
+    
+    # Вычисляем расстояние до каждой офисной локации
+    distances = [geodesic(office_coords, user_coords).meters for office_coords in WORK_LOCATION_COORDS]
+    
+    # Находим минимальное расстояние до ближайшего офиса
+    min_distance = round(min(distances), 2)
+
+    if min_distance > ALLOWED_RADIUS_METERS:
+        await database.log_check_in_attempt(user.id, check_in_type, 'FAIL_LOCATION', user_location.latitude, user_location.longitude, min_distance)
+        await update.message.reply_text(f"❌ Чек-ин отклонен.\nВы находитесь слишком далеко от рабочего места ({min_distance} м).", reply_markup=fallback_keyboard)
         context.user_data.pop('photo_file_id', None)
         return CHOOSE_ACTION
 
     face_similarity, is_match = await verify_face(user.id, photo_file_id, context)
     if not is_match:
-        await database.log_check_in_attempt(user.id, check_in_type, 'FAIL_FACE', user_location.latitude, user_location.longitude, distance, face_similarity)
+        # Используем min_distance для логирования
+        await database.log_check_in_attempt(user.id, check_in_type, 'FAIL_FACE', user_location.latitude, user_location.longitude, min_distance, face_similarity)
         await update.message.reply_text(f"❌ Чек-ин отклонен.\nЛицо на фото не распознано (схожесть: {face_similarity:.1f}%).", reply_markup=fallback_keyboard)
         context.user_data.pop('photo_file_id', None)
         return CHOOSE_ACTION
     
     # В СЛУЧАЕ УСПЕХА
     status = "LATE" if is_late else "SUCCESS"
-    await database.log_check_in_attempt(user.id, check_in_type, status, user_location.latitude, user_location.longitude, distance, face_similarity)
+    # Используем min_distance для логирования
+    await database.log_check_in_attempt(user.id, check_in_type, status, user_location.latitude, user_location.longitude, min_distance, face_similarity)
     
     if user.id in context.bot_data.get('unhandled_late_users', set()):
         context.bot_data['unhandled_late_users'].remove(user.id)
@@ -357,7 +366,8 @@ async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     success_message = f"✅ {'Приход' if check_in_type == 'ARRIVAL' else 'Уход'} успешно отмечен!"
     if is_late: success_message += " (с опозданием)"
     
-    await update.message.reply_text(f"{success_message}\n\n📍 Расстояние до офиса: {distance} м.\n👤 Схожесть лица: {face_similarity:.1f}%\n\nХорошего дня!", reply_markup=main_menu_keyboard())
+    # Отображаем минимальное расстояние в сообщении
+    await update.message.reply_text(f"{success_message}\n\n📍 Расстояние до ближайшего офиса: {min_distance} м.\n👤 Схожесть лица: {face_similarity:.1f}%\n\nХорошего дня!", reply_markup=main_menu_keyboard())
     context.user_data.clear()
     return CHOOSE_ACTION
 
