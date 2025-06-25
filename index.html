@@ -154,6 +154,33 @@
             </details>
         </main>
     </div>
+    
+    <dialog id="log-modal">
+        <article>
+            <header>
+                <a href="#close" aria-label="Close" class="close" data-target="log-modal"></a>
+                <strong id="log-modal-header">История событий</strong>
+            </header>
+            
+            <form id="log-form">
+                <input type="hidden" id="log-employee-id">
+                <div class="grid">
+                    <input type="date" id="log-start-date" required>
+                    <input type="date" id="log-end-date" required>
+                    <button type="submit">Показать</button>
+                </div>
+            </form>
+
+            <div id="log-loading" aria-busy="true" style="display: none;">Загрузка истории...</div>
+            <div id="log-error" style="color: var(--pico-color-red); display: none;"></div>
+            <div style="max-height: 50vh; overflow-y: auto; margin-top: 1rem;">
+                <table id="log-table">
+                    <thead><tr><th>Время</th><th>Тип</th><th>Статус</th><th>Детали</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </article>
+    </dialog>
 
     <dialog id="add-employee-modal">
         <article class="modal-body">
@@ -336,7 +363,7 @@
             document.getElementById('holiday-year-select').addEventListener('change', loadHolidays);
             document.getElementById('add-holiday-form').addEventListener('submit', handleAddHoliday);
             document.getElementById('holidays-list').addEventListener('click', handleDeleteHoliday);
-
+            document.getElementById('log-form').addEventListener('submit', handleLogFormSubmit); // <-- НОВЫЙ
             // Универсальный обработчик для закрытия модальных окон
             document.addEventListener('click', (e) => {
                 if(e.target.matches(".close")) {
@@ -623,6 +650,7 @@
                     loadingDiv.style.display = 'none';
                     table.style.display = 'table';
                     tbody.innerHTML = '';
+                    
                     data.forEach(employee => {
                         const row = document.createElement('tr');
                         row.dataset.employeeId = employee.id;
@@ -630,6 +658,7 @@
                             <td>${employee.id}</td>
                             <td>${employee.full_name}</td>
                             <td>
+                                <button class="action-btn" data-action="view_log" data-id="${employee.id}" data-name="${employee.full_name}">История</button>
                                 <button class="action-btn" data-action="edit" data-id="${employee.id}">Изменить</button>
                                 <button class="action-btn" data-action="manage-leave" data-id="${employee.id}" data-name="${employee.full_name}">Отсутствие</button>
                                 <button class="action-btn delete-btn" data-action="deactivate" data-id="${employee.id}">Удалить</button>
@@ -664,8 +693,74 @@
             } else if (action === 'edit') {
                 openEditModalFor(employeeId);
             }
+            else if (action === 'view_log') { // <-- НОВЫЙ БЛОК
+                openLogModalFor(employeeId, employeeName);
+        }
+        }
+        // --- НОВЫЕ ФУНКЦИИ ДЛЯ ЛОГА ---
+        function openLogModalFor(employeeId, employeeName) {
+            const modal = document.getElementById('log-modal');
+            document.getElementById('log-modal-header').textContent = `История: ${employeeName}`;
+            document.getElementById('log-employee-id').value = employeeId;
+            
+            // Устанавливаем даты по умолчанию на текущий месяц
+            const today = new Date();
+            const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+            document.getElementById('log-start-date').valueAsDate = startOfMonth;
+            document.getElementById('log-end-date').valueAsDate = today;
+
+            modal.showModal();
+            // Сразу загружаем лог за период по умолчанию
+            document.getElementById('log-form').requestSubmit();
         }
 
+        function handleLogFormSubmit(event) {
+            event.preventDefault();
+            const employeeId = document.getElementById('log-employee-id').value;
+            const startDate = document.getElementById('log-start-date').value;
+            const endDate = document.getElementById('log-end-date').value;
+
+            const loading = document.getElementById('log-loading');
+            const errorDiv = document.getElementById('log-error');
+            const tableBody = document.querySelector('#log-table tbody');
+
+            loading.style.display = 'block';
+            errorDiv.style.display = 'none';
+            tableBody.innerHTML = '';
+
+            fetch(`/api/employees/${employeeId}/log?start_date=${startDate}&end_date=${endDate}`)
+            .then(response => {
+                if (!response.ok) return response.json().then(err => { throw new Error(err.detail) });
+                return response.json();
+            })
+            .then(data => {
+                if (data.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="4">Нет событий за выбранный период.</td></tr>';
+                    return;
+                }
+                data.forEach(log => {
+                    const row = document.createElement('tr');
+                    let details = '';
+                    if (log.distance_meters !== null) details += `Расстояние: ${log.distance_meters}м. `;
+                    if (log.face_similarity !== null) details += `Схожесть: ${log.face_similarity.toFixed(1)}%`;
+                    
+                    row.innerHTML = `
+                        <td>${log.timestamp}</td>
+                        <td>${log.check_in_type}</td>
+                        <td>${log.status}</td>
+                        <td>${details || '-'}</td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+            })
+            .catch(error => {
+                errorDiv.textContent = `Ошибка: ${error.message}`;
+                errorDiv.style.display = 'block';
+            })
+            .finally(() => {
+                loading.style.display = 'none';
+            });
+        }
         function openEditModalFor(employeeId) {
             const modal = document.getElementById('edit-employee-modal');
             const form = document.getElementById('edit-employee-form');

@@ -102,6 +102,22 @@ async def delete_existing_holiday(request: HolidayDeleteRequest):
         raise HTTPException(status_code=500, detail="Ошибка сервера при удалении праздника.")
 # --- КОНЕЦ НОВЫХ ЭНДПОИНТОВ ---
 
+# --- НОВЫЙ ЭНДПОИНТ ДЛЯ ПОЛУЧЕНИЯ ЛОГА ---
+@app.get("/api/employees/{employee_id}/log", response_model=List[dict])
+async def get_log_for_employee(employee_id: int, start_date: date, end_date: date):
+    """Возвращает детализированный лог событий для сотрудника."""
+    try:
+        if start_date > end_date:
+            raise HTTPException(status_code=400, detail="Начальная дата не может быть позже конечной.")
+        
+        log_data = await database.get_employee_log(employee_id, start_date, end_date)
+        return log_data
+    except Exception as e:
+        logger.error(f"Ошибка при получении лога для сотрудника {employee_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+# --- КОНЕЦ НОВОГО ЭНДПОИНТА ---
+
+
 @app.get("/api/employees", response_model=List[Employee])
 async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_name', sort_order: Optional[str] = 'asc'):
     """

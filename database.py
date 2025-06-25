@@ -666,6 +666,124 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         await conn.close()
 # --- КОНЕЦ ПЕРЕРАБОТАННОЙ ФУНКЦИИ ---
 
+async def get_employee_log(employee_id: int, start_date: date, end_date: date) -> list[dict]:
+    """
+    Получает детализированный лог всех событий сотрудника за период.
+    """
+    start_dt_utc = datetime.combine(start_date, time.min).astimezone(ZoneInfo("UTC"))
+    end_dt_utc = datetime.combine(end_date, time.max).astimezone(ZoneInfo("UTC"))
+
+    conn = await get_db_connection()
+    try:
+        query = """
+            SELECT timestamp, check_in_type, status, distance_meters, face_similarity
+            FROM check_ins
+            WHERE employee_telegram_id = $1 AND timestamp BETWEEN $2 AND $3
+            ORDER BY timestamp DESC
+        """
+        rows = await conn.fetch(query, employee_id, start_dt_utc, end_dt_utc)
+        
+        # Конвертируем время в локальную зону и форматируем
+        log_entries = []
+        for row in rows:
+            local_ts = row['timestamp'].astimezone(LOCAL_TIMEZONE)
+            entry = dict(row)
+            entry['timestamp'] = local_ts.strftime('%d.%m.%Y %H:%M:%S')
+            log_entries.append(entry)
+            
+        return log_entries
+    finally:
+        await conn.close()
+
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ МАССОВОГО ОБНОВЛЕНИЯ ---
+async def bulk_add_or_update_schedules(schedules_data: list[dict]):
+    """
+    Массово добавляет или обновляет графики для списка сотрудников
+    в рамках одной транзакции для эффективности.
+    """
+    conn = await get_db_connection()
+    try:
+        # Используем транзакцию: если хоть одна запись не удастся, все изменения откатятся.
+        async with conn.transaction():
+            for data in schedules_data:
+                telegram_id = data['telegram_id']
+                effective_date = data['effective_date']
+                schedule = data['schedule']
+
+                # Эта логика повторяет вашу функцию add_or_update_employee,
+                # но выполняется в рамках одного соединения и транзакции.
+                for day_of_week in range(7):
+                    times = schedule.get(day_of_week)
+                    start_time = times.get('start') if times else None
+                    end_time = times.get('end') if times else None
+                    
+                    await conn.execute(
+                        """
+                        INSERT INTO schedules (employee_telegram_id, day_of_week, effective_from_date, start_time, end_time)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (employee_telegram_id, day_of_week, effective_from_date) DO UPDATE SET
+                            start_time = EXCLUDED.start_time,
+                            end_time = EXCLUDED.end_time
+                        """,
+                        telegram_id, day_of_week, effective_date, start_time, end_time
+                    )
+        logger.info(f"Массовое обновление графиков завершено. Обработано записей: {len(schedules_data)}")
+    finally:
+        await conn.close()
+# --- КОНЕЦ НОВОЙ ФУНКЦИИ ---
+
+async def get_personal_monthly_stats(employee_id: int) -> dict:
+    """
+    Собирает статистику по чекинам для одного сотрудника за текущий месяц.
+    """
+    now = datetime.now(LOCAL_TIMEZONE)
+    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    # Конвертируем в UTC для запроса в БД
+    start_of_month_utc = start_of_month.astimezone(ZoneInfo("UTC"))
+    now_utc = now.astimezone(ZoneInfo("UTC"))
+
+    conn = await get_db_connection()
+    try:
+        query = """
+            SELECT
+                DATE_TRUNC('day', timestamp AT TIME ZONE $1) as checkin_day,
+                status
+            FROM check_ins
+            WHERE employee_telegram_id = $2
+              AND timestamp BETWEEN $3 AND $4
+              AND status IN ('SUCCESS', 'LATE', 'APPROVED_LEAVE')
+        """
+        rows = await conn.fetch(query, LOCAL_TIMEZONE.key, employee_id, start_of_month_utc, now_utc)
+
+        stats = {
+            'work_days': set(),
+            'late_days': set(),
+            'left_early_days': set()
+        }
+
+        for row in rows:
+            day = row['checkin_day'].date()
+            status = row['status']
+            
+            if status == 'SUCCESS' or status == 'LATE':
+                stats['work_days'].add(day)
+            
+            if status == 'LATE':
+                stats['late_days'].add(day)
+
+            if status == 'APPROVED_LEAVE':
+                stats['left_early_days'].add(day)
+
+        # Возвращаем количество уникальных дней
+        return {
+            'work_days': len(stats['work_days']),
+            'late_days': len(stats['late_days']),
+            'left_early_days': len(stats['left_early_days'])
+        }
+    finally:
+        await conn.close()
+
 async def get_dashboard_stats(for_date: date) -> dict:
     """Собирает оперативную статистику за указанную дату для дашборда из PostgreSQL."""
     stats = {

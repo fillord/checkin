@@ -371,6 +371,27 @@ async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data.clear()
     return CHOOSE_ACTION
 
+@check_active_employee
+async def get_personal_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сотруднику его статистику за текущий месяц."""
+    user_id = update.effective_user.id
+    
+    await update.message.reply_text("Собираю вашу статистику за текущий месяц...")
+    
+    stats = await database.get_personal_monthly_stats(user_id)
+    
+    # Получаем название текущего месяца на русском
+    month_name = datetime.now(database.LOCAL_TIMEZONE).strftime('%B')
+
+    report_text = (
+        f"📊 *Статистика за {month_name}*:\n\n"
+        f"✅ *Рабочих дней отмечено:* {stats['work_days']}\n"
+        f"🕒 *Опозданий:* {stats['late_days']}\n"
+        f"🙏 *Отпросился раньше:* {stats['left_early_days']}"
+    )
+    
+    await update.message.reply_text(report_text, parse_mode='Markdown')
+
 async def employee_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции employee_cancel_command из bot.py)
     await update.message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())

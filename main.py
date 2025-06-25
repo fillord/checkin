@@ -24,7 +24,7 @@ from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
     register_face, awaiting_photo, awaiting_location, employee_cancel_command,
-    handle_late_checkin, ask_leave_start, ask_leave_get_reason, update_photo_start, update_photo_receive
+    handle_late_checkin, ask_leave_start, ask_leave_get_reason, update_photo_start, update_photo_receive, get_personal_stats
 )
 from handlers_admin import (
     admin_command, admin_reports_menu, admin_get_today_report, admin_get_yesterday_report,
@@ -35,7 +35,7 @@ from handlers_admin import (
     admin_back_to_menu, handle_leave_request_decision, admin_add_leave_start, admin_add_leave_get_id,
     admin_add_leave_get_type, admin_add_leave_get_period, admin_cancel_leave_start, admin_cancel_leave_get_id, admin_cancel_leave_get_period,
     admin_web_ui, schedule_get_effective_date, admin_holidays_menu, holiday_add_start, holiday_get_add_date, holiday_get_add_name,
-    holiday_delete_start, holiday_get_delete_date
+    holiday_delete_start, holiday_get_delete_date, bulk_update_start, handle_schedule_file, bulk_add_start, handle_add_employees_file
 )
 
 # Настройка логирования
@@ -163,10 +163,28 @@ async def main() -> None:
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
             name="admin_conversation", persistent=True,
         )
-
+        bulk_update_conv = ConversationHandler(
+            entry_points=[CommandHandler("bulk_update", bulk_update_start)],
+            states={
+                config.AWAITING_SCHEDULE_FILE: [MessageHandler(filters.Document.ALL, handle_schedule_file)]
+            },
+            fallbacks=[CommandHandler("cancel", admin_back_to_menu)]
+        )
+        bulk_add_conv = ConversationHandler(
+            entry_points=[CommandHandler("bulk_add", bulk_add_start)],
+            states={
+                config.AWAITING_ADD_EMPLOYEES_FILE: [
+                    MessageHandler(filters.Document.ALL, handle_add_employees_file)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", admin_back_to_menu)]
+        )
+        application.add_handler(bulk_add_conv)
+        application.add_handler(bulk_update_conv)
         application.add_handler(admin_conv_handler)
         application.add_handler(checkin_conv_handler)
 
+        application.add_handler(CommandHandler("mystats", get_personal_stats))
         # Добавляем отдельный обработчик для решения админа по уходу
         application.add_handler(CallbackQueryHandler(handle_leave_request_decision, pattern="^leave:"))
         application.add_handler(CommandHandler("web", admin_web_ui))

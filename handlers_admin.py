@@ -23,7 +23,7 @@ from config import (
     SCHEDULE_MON, DAYS_OF_WEEK, BUTTON_ADMIN_BACK, BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE,
     LEAVE_GET_ID, LEAVE_GET_TYPE, LEAVE_GET_PERIOD, CANCEL_LEAVE_GET_ID, CANCEL_LEAVE_GET_PERIOD,
     SCHEDULE_GET_EFFECTIVE_DATE, LOCAL_TIMEZONE,
-    HOLIDAY_MENU, HOLIDAY_GET_ADD_DATE, HOLIDAY_GET_ADD_NAME, HOLIDAY_GET_DELETE_DATE
+    HOLIDAY_MENU, HOLIDAY_GET_ADD_DATE, HOLIDAY_GET_ADD_NAME, HOLIDAY_GET_DELETE_DATE, AWAITING_SCHEDULE_FILE, AWAITING_ADD_EMPLOYEES_FILE
 )
 
 logger = logging.getLogger(__name__)
@@ -306,6 +306,261 @@ async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Удаление отменено.", reply_markup=admin_menu_keyboard())
     context.user_data.clear()
     return ADMIN_MENU
+
+
+# --- НОВЫЙ БЛОК ДЛЯ МАССОВОГО ДОБАВЛЕНИЯ СОТРУДНИКОВ ---
+
+async def bulk_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс массового добавления сотрудников."""
+    instructions = (
+        "Вы начали процесс *массового добавления и обновления сотрудников*.\n\n"
+        "Пожалуйста, подготовьте и отправьте CSV-файл. Если сотрудник с указанным `telegram_id` уже существует, его график будет обновлен. Если нет — будет создан новый сотрудник.\n\n"
+        "**Формат файла точно такой же, как для обновления графиков:**\n"
+        "`telegram_id,effective_from_date,monday,tuesday,wednesday,thursday,friday,saturday,sunday`\n\n"
+        "Отправьте файл, чтобы начать."
+    )
+    await update.message.reply_text(instructions, parse_mode='Markdown')
+    return AWAITING_ADD_EMPLOYEES_FILE
+
+
+async def handle_add_employees_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает файл для добавления/обновления сотрудников."""
+    document = update.message.document
+    if not document or not document.file_name.endswith('.csv'):
+        await update.message.reply_text("Пожалуйста, отправьте файл в формате .csv")
+        return AWAITING_ADD_EMPLOYEES_FILE
+
+    await update.message.reply_text("Файл получен. Начинаю обработку...")
+
+    file = await document.get_file()
+    file_content_bytes = await file.download_as_bytearray()
+    
+    try:
+        file_content_str = file_content_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        await update.message.reply_text("Ошибка: файл должен быть в кодировке UTF-8.")
+        return ConversationHandler.END
+
+    csvfile = StringIO(file_content_str)
+    # Используем DictReader для удобной работы со столбцами по их именам
+    # strip() убирает случайные пробелы в заголовках
+    reader = csv.DictReader(l.strip() for l in csvfile)
+    
+    schedules_to_update = []
+    errors = []
+    time_pattern = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
+
+    for i, row in enumerate(reader, start=2):
+        try:
+            # Проверяем наличие обязательных полей
+            required_fields = ['telegram_id', 'effective_from_date', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            if not all(field in row for field in required_fields):
+                raise ValueError("Отсутствуют необходимые столбцы. Проверьте заголовок файла.")
+
+            telegram_id = int(row['telegram_id'].strip())
+            effective_date = datetime.strptime(row['effective_from_date'].strip(), '%d.%m.%Y').date()
+            
+            schedule = {}
+            days_of_week_keys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            for day_index, day_key in enumerate(days_of_week_keys):
+                schedule_str = row[day_key].strip()
+                if schedule_str == '0':
+                    schedule[day_index] = {}
+                elif time_pattern.match(schedule_str):
+                    start_str, end_str = schedule_str.split('-')
+                    schedule[day_index] = {'start': time.fromisoformat(start_str), 'end': time.fromisoformat(end_str)}
+                else:
+                    raise ValueError(f"неверный формат времени в столбце '{day_key}'")
+            
+            # Для добавления сотрудника нужно его имя, которого нет в файле.
+            # Мы будем использовать заглушку "Требуется обновить ФИО"
+            # и вызывать существующую функцию add_or_update_employee
+            # В файле с графиками нет ФИО, поэтому нужно получить его или установить заглушку
+            # Давайте упростим: эта функция будет только для ОБНОВЛЕНИЯ графиков. 
+            # Для добавления нужно ФИО, которого нет в файле.
+            # Переосмыслим: Чтобы добавлять, нужно имя.
+            # Давайте изменим формат файла!
+
+            # --- ПЕРЕСМОТР ЛОГИКИ ---
+            # Для добавления нужно имя. Добавим его в CSV.
+            # Новый формат: telegram_id,full_name,effective_from_date,...
+            
+            # --- Возвращаемся к исходному плану, но с правкой ---
+            # Логика handle_schedule_file была почти идеальна, используем ее
+            # как шаблон, но с фокусом на добавление.
+            # Для добавления нужно имя, которого нет в файле с графиками.
+            # Давайте сделаем так: если юзер существует, обновляем график.
+            # Если нет - сообщаем об ошибке, что юзера нужно сперва добавить.
+            # Это самый безопасный путь.
+
+            # Поэтому оставляем логику handle_schedule_file как есть,
+            # и создаем новый обработчик для добавления с ДРУГИМ форматом файла.
+            
+            # --- НОВЫЙ, ПРАВИЛЬНЫЙ ПОДХОД ---
+            
+            # Логика `handle_add_employees_file` должна отличаться.
+            # Файл для добавления должен содержать ФИО.
+            # Новый формат: telegram_id, full_name, effective_from_date, ...
+            
+            if 'full_name' not in row or not row['full_name'].strip():
+                 raise ValueError("Отсутствует или пустое ФИО (full_name)")
+            
+            full_name = row['full_name'].strip()
+            
+            # Собираем данные для add_or_update_employee
+            schedules_to_update.append({
+                'telegram_id': telegram_id,
+                'full_name': full_name, # <-- Добавили ФИО
+                'effective_date': effective_date,
+                'schedule': schedule
+            })
+
+        except (ValueError, IndexError, KeyError) as e:
+            errors.append(f"Строка {i}: Ошибка - {e}. Данные: `{','.join(row.values())}`")
+
+    # Массовое обновление/добавление в БД
+    if schedules_to_update:
+        # Здесь мы не можем использовать bulk_add_or_update_schedules, так как она не принимает full_name
+        # Нам нужно либо модифицировать ее, либо вызывать add_or_update_employee в цикле.
+        # Давайте модифицируем `database.py` для поддержки этого.
+        # НЕТ, `add_or_update_employee` - идеальный вариант для этого.
+        # Будем вызывать его в цикле. Для 50-100 записей это приемлемо.
+        for employee_data in schedules_to_update:
+            await database.add_or_update_employee(
+                telegram_id=employee_data['telegram_id'],
+                full_name=employee_data['full_name'],
+                schedule_data=employee_data['schedule'],
+                effective_date=employee_data['effective_date']
+            )
+            
+    # Отправка отчета
+    success_count = len(schedules_to_update)
+    error_count = len(errors)
+    
+    summary = f"Обработка файла завершена.\n\n✅ Успешно добавлено/обновлено: *{success_count}* сотрудников.\n❌ Обнаружено ошибок: *{error_count}*."
+    await update.message.reply_text(summary, parse_mode='Markdown')
+
+    if errors:
+        error_report_str = "Детализация ошибок:\n\n" + "\n".join(errors)
+        error_report_bytes = error_report_str.encode('utf-8')
+        error_file = BytesIO(error_report_bytes)
+        await update.message.reply_document(
+            document=InputFile(error_file, filename='add_employees_error_report.txt'),
+            caption="Найдены ошибки. Исправьте их в исходном файле и отправьте его снова."
+        )
+
+    return ConversationHandler.END
+
+
+# --- КОНЕЦ НОВОГО БЛОКА ---
+
+# --- НОВЫЙ БЛОК ДЛЯ МАССОВОГО ОБНОВЛЕНИЯ ГРАФИКОВ ---
+
+async def bulk_update_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс массового обновления графиков."""
+    # --- ИСПРАВЛЕННЫЙ ТЕКСТ ИНСТРУКЦИИ ---
+    instructions = (
+        "Вы начали процесс массового обновления графиков.\n\n"
+        "Пожалуйста, подготовьте и отправьте мне CSV-файл со следующими столбцами:\n"
+        "`telegram_id,effective_from_date,monday,tuesday,wednesday,thursday,friday,saturday,sunday`\n\n"
+        "*Требования:*\n"
+        "1. *Кодировка файла:* UTF-8.\n"
+        "2. *Разделитель:* запятая (,)\n"
+        "3. *telegram_id:* Числовой ID пользователя в Telegram.\n"
+        "4. *effective_from_date:* Дата вступления графика в силу в формате `ДД.ММ.ГГГГ`.\n"
+        "5. *Дни недели:* Время в формате `ЧЧ:ММ-ЧЧ:ММ` или `0` для выходного.\n\n"
+        "Отправьте файл в этот чат, чтобы начать обработку."
+    )
+    await update.message.reply_text(instructions, parse_mode='Markdown')
+    return AWAITING_SCHEDULE_FILE
+
+
+async def handle_schedule_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает полученный CSV-файл с графиками."""
+    document = update.message.document
+    if not document or not document.file_name.endswith('.csv'):
+        await update.message.reply_text("Пожалуйста, отправьте файл в формате .csv")
+        return AWAITING_SCHEDULE_FILE
+
+    await update.message.reply_text("Файл получен. Начинаю обработку, это может занять некоторое время...")
+
+    file = await document.get_file()
+    file_content_bytes = await file.download_as_bytearray()
+    
+    try:
+        file_content_str = file_content_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        await update.message.reply_text("Ошибка: файл должен быть в кодировке UTF-8. Пожалуйста, пересохраните файл и попробуйте снова.")
+        return ConversationHandler.END
+
+    csvfile = StringIO(file_content_str)
+    reader = csv.reader(csvfile)
+
+    schedules_to_update = []
+    errors = []
+    time_pattern = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
+
+    try:
+        header = next(reader) # Пропускаем заголовок
+        for i, row in enumerate(reader, start=2): # Начинаем нумерацию со строки 2
+            if not row: continue # Пропускаем пустые строки
+            
+            try:
+                if len(row) != 9:
+                    raise ValueError("Неверное количество столбцов (должно быть 9)")
+
+                telegram_id = int(row[0].strip())
+                effective_date = datetime.strptime(row[1].strip(), '%d.%m.%Y').date()
+                
+                schedule = {}
+                for day_index in range(7):
+                    schedule_str = row[day_index + 2].strip()
+                    if schedule_str == '0':
+                        schedule[day_index] = {}
+                    elif time_pattern.match(schedule_str):
+                        start_str, end_str = schedule_str.split('-')
+                        schedule[day_index] = {'start': time.fromisoformat(start_str), 'end': time.fromisoformat(end_str)}
+                    else:
+                        raise ValueError(f"неверный формат времени в столбце '{header[day_index+2]}'")
+                
+                schedules_to_update.append({
+                    'telegram_id': telegram_id,
+                    'effective_date': effective_date,
+                    'schedule': schedule
+                })
+
+            except (ValueError, IndexError) as e:
+                errors.append(f"Строка {i}: Ошибка - {e}. Данные: `{','.join(row)}`")
+
+    except Exception as e:
+        await update.message.reply_text(f"Критическая ошибка при чтении файла: {e}")
+        return ConversationHandler.END
+
+    if schedules_to_update:
+        try:
+            await database.bulk_add_or_update_schedules(schedules_to_update)
+        except Exception as e:
+            await update.message.reply_text(f"Произошла ошибка при обновлении данных в базе: {e}")
+            return ConversationHandler.END
+            
+    success_count = len(schedules_to_update)
+    error_count = len(errors)
+    
+    summary = f"Обработка файла завершена.\n\n✅ Успешно обработано и готово к обновлению: *{success_count}* записей.\n❌ Обнаружено ошибок: *{error_count}*."
+    await update.message.reply_text(summary, parse_mode='Markdown')
+
+    if errors:
+        error_report_str = "Детализация ошибок:\n\n" + "\n".join(errors)
+        error_report_bytes = error_report_str.encode('utf-8')
+        error_file = BytesIO(error_report_bytes)
+        await update.message.reply_document(
+            document=InputFile(error_file, filename='error_report.txt'),
+            caption="Найдены ошибки. Исправьте их в исходном файле и отправьте его снова."
+        )
+
+    return ConversationHandler.END
+
+# --- КОНЕЦ НОВОГО БЛОКА ---
 
 # --- НОВЫЙ БЛОК: УПРАВЛЕНИЕ ПРАЗДНИКАМИ ---
 
