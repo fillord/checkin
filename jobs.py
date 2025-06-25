@@ -7,7 +7,7 @@ import database
 from datetime import datetime, timedelta, time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database import get_all_active_employees_with_schedules, has_checked_in_today, get_report_stats_for_period
+from database import get_all_active_employees_with_schedules, has_checked_in_today, get_report_stats_for_period, is_holiday
 from config import LOCAL_TIMEZONE, ADMIN_IDS, LIVENESS_ACTIONS # LIVENESS_ACTIONS - пример, если понадобится
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,12 @@ async def send_dashboard_snapshot(context: ContextTypes.DEFAULT_TYPE, report_typ
 
 async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(LOCAL_TIMEZONE)
-    today_str = now.date().isoformat()
+    today = now.date()
+    if await is_holiday(today):
+        logger.info(f"Сегодня ({today.isoformat()}) праздник. Уведомления отключены.")
+        return
+    
+    today_str = today.isoformat()
 
     # Инициализация и очистка данных
     if 'notifications_sent' not in context.bot_data:
@@ -156,37 +161,29 @@ async def check_and_send_notifications(context: ContextTypes.DEFAULT_TYPE):
         context.bot_data['unhandled_late_users'] = set()
     if context.bot_data.get('last_cleanup_date') != today_str:
         context.bot_data['notifications_sent'] = {}
-        context.bot_data['unhandled_late_users'] = set() # Очищаем и список опоздавших
+        context.bot_data['unhandled_late_users'] = set()
         context.bot_data['last_cleanup_date'] = today_str
-
-    employees = await database.get_all_active_employees_with_schedules(now.date())
+    employees = await database.get_all_active_employees_with_schedules(today)
     if not employees:
         return
-
     for emp_id, name, start_time_str in employees:
         try:
             if start_time_str is None:
                 continue
             logger.info(f"---[ПРОВЕРКА]--- Сотрудник: {name} (ID: {emp_id}), график: '{start_time_str}'")
-            # asyncpg возвращает объект time, а не строку. Преобразуем его.
             start_time = start_time_str if isinstance(start_time_str, time) else time.fromisoformat(start_time_str)
             shift_start_datetime = datetime.combine(now.date(), start_time, tzinfo=LOCAL_TIMEZONE)
-
-            # --- Логика для напоминания (остается без изменений) ---
             warning_datetime = shift_start_datetime - timedelta(minutes=5)
             warning_key = f"{emp_id}_warning_{today_str}"
             if now >= warning_datetime and not context.bot_data['notifications_sent'].get(warning_key):
                 if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
                     await context.bot.send_message(chat_id=emp_id, text=f"🔔 Напоминание: ваш рабочий день скоро начнется. Пожалуйста, не забудьте отметиться.")
                 context.bot_data['notifications_sent'][warning_key] = True
-
-            # --- ИЗМЕНЕННАЯ Логика для уведомления об ОПОЗДАНИИ ---
             missed_datetime = shift_start_datetime + timedelta(minutes=5, seconds=30)
             missed_key = f"{emp_id}_missed_{today_str}"
             if now >= missed_datetime and not context.bot_data['notifications_sent'].get(missed_key):
                 if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
                     try:
-                        # Просто отправляем текст и добавляем юзера в "список опоздавших"
                         await context.bot.send_message(chat_id=emp_id, text="Вы пропустили время для чек-ина. Пожалуйста, нажмите '✅ Приход', чтобы отметиться с опозданием.")
                         context.bot_data['unhandled_late_users'].add(emp_id)
                         logger.info(f"Сотрудник {name} (ID: {emp_id}) помечен как опоздавший.")
@@ -249,13 +246,17 @@ async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
     """Применяет штраф за неотмеченный уход."""
     now = datetime.now(LOCAL_TIMEZONE)
     yesterday = now.date() - timedelta(days=1) # Задача запускается после полуночи за вчерашний день
+    # ПРОВЕРКА НА ПРАЗДНИК: Не применяем штрафы, если вчера был праздник.
+    if await is_holiday(yesterday):
+        logger.info(f"Вчера ({yesterday.isoformat()}) был праздник. Штрафы не применяются.")
+        return
+
     logger.info(f"---[ЗАДАЧА]--- Применение штрафов за неотмеченный уход за {yesterday.isoformat()} ---")
 
     employees = await database.get_all_active_employees_with_schedules(yesterday)
 
     for emp_id, name, _ in employees:
         try:
-            # Проверяем чекины именно за вчерашний день
             has_arrived = await database.has_checked_in_on_date(emp_id, "ARRIVAL", yesterday)
             if not has_arrived:
                 continue
@@ -265,3 +266,4 @@ async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
                 await database.override_as_absent(emp_id, yesterday)
         except Exception as e:
             logger.error(f"Ошибка в цикле применения штрафов для {emp_id}: {e}", exc_info=True)
+            

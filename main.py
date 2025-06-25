@@ -34,7 +34,8 @@ from handlers_admin import (
     admin_delete_start, delete_get_id, delete_confirm, schedule_handler_factory,
     admin_back_to_menu, handle_leave_request_decision, admin_add_leave_start, admin_add_leave_get_id,
     admin_add_leave_get_type, admin_add_leave_get_period, admin_cancel_leave_start, admin_cancel_leave_get_id, admin_cancel_leave_get_period,
-    admin_web_ui, schedule_get_effective_date
+    admin_web_ui, schedule_get_effective_date, admin_holidays_menu, holiday_add_start, holiday_get_add_date, holiday_get_add_name,
+    holiday_delete_start, holiday_get_delete_date
 )
 
 # Настройка логирования
@@ -88,6 +89,7 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_REPORTS}$"), admin_reports_menu),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_LEAVE}$"), admin_add_leave_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_LEAVE}$"), admin_cancel_leave_start),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_HOLIDAYS}$"), admin_holidays_menu), # <-- Новая точка входа
                 ],
                 config.ADMIN_REPORTS_MENU: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_REPORT_TODAY}$"), admin_get_today_report),
@@ -139,6 +141,24 @@ async def main() -> None:
                 config.SCHEDULE_FRI: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[4]],
                 config.SCHEDULE_SAT: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[5]],
                 config.SCHEDULE_SUN: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[6]],
+
+                config.HOLIDAY_MENU: [
+                    MessageHandler(filters.Regex("^➕ Добавить праздник$"), holiday_add_start),
+                    MessageHandler(filters.Regex("^➖ Удалить праздник$"), holiday_delete_start),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_command),
+                ],
+                config.HOLIDAY_GET_ADD_DATE: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_holidays_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, holiday_get_add_date)
+                ],
+                config.HOLIDAY_GET_ADD_NAME: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), holiday_add_start),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, holiday_get_add_name)
+                ],
+                config.HOLIDAY_GET_DELETE_DATE: [
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_holidays_menu),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, holiday_get_delete_date)
+                ]
             },
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
             name="admin_conversation", persistent=True,

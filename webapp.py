@@ -59,10 +59,48 @@ class EmployeeUpdateRequest(BaseModel):
         return v
 # --- КОНЕЦ НОВОЙ МОДЕЛИ ---
 
+class Holiday(BaseModel):
+    holiday_date: date
+    holiday_name: str
+
+class HolidayDeleteRequest(BaseModel):
+    holiday_date: date
+
 # --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
 
 # --- API Эндпоинты (точки доступа к данным) ---
+
+# --- НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРАЗДНИКОВ ---
+@app.get("/api/holidays/{year}", response_model=List[Holiday])
+async def get_holidays(year: int):
+    """Возвращает список праздников за указанный год."""
+    try:
+        return await database.get_holidays_for_year(year)
+    except Exception as e:
+        logger.error(f"Ошибка при получении праздников за {year} год: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+
+@app.post("/api/holidays/add")
+async def add_new_holiday(request: Holiday):
+    """Добавляет новый праздничный день."""
+    try:
+        await database.add_holiday(request.holiday_date, request.holiday_name)
+        return {"status": "success", "message": "Праздник успешно добавлен."}
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении праздника: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Ошибка сервера при добавлении праздника.")
+
+@app.post("/api/holidays/delete")
+async def delete_existing_holiday(request: HolidayDeleteRequest):
+    """Удаляет праздничный день."""
+    try:
+        await database.delete_holiday(request.holiday_date)
+        return {"status": "success", "message": "Праздник успешно удален."}
+    except Exception as e:
+        logger.error(f"Ошибка при удалении праздника: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Ошибка сервера при удалении праздника.")
+# --- КОНЕЦ НОВЫХ ЭНДПОИНТОВ ---
 
 @app.get("/api/employees", response_model=List[Employee])
 async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_name', sort_order: Optional[str] = 'asc'):
@@ -81,6 +119,49 @@ async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_
     except Exception as e:
         logger.error(f"Ошибка при получении списка сотрудников через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+
+@app.get("/api/employees/{employee_id}")
+async def get_employee_details(employee_id: int):
+    """Возвращает детальную информацию о сотруднике, включая его последний график."""
+    try:
+        employee_data = await database.get_employee_with_schedule(employee_id)
+        if not employee_data:
+            raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        return employee_data
+    except Exception as e:
+        logger.error(f"Ошибка при получении деталей сотрудника {employee_id} через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+
+# --- НОВЫЙ ЭНДПОИНТ для обновления сотрудника ---
+@app.post("/api/employees/update")
+async def update_employee(request: EmployeeUpdateRequest):
+    """Обновляет данные сотрудника и его график (создает новую версию)."""
+    try:
+        # Эта логика полностью аналогична добавлению, т.к. add_or_update_employee
+        # обрабатывает и создание, и обновление. Мы просто вызываем ту же функцию.
+        schedule_for_db = {}
+        for day_index_str, times in request.schedule.items():
+            day_index = int(day_index_str)
+            if times.start and times.end:
+                schedule_for_db[day_index] = {
+                    "start": time.fromisoformat(times.start),
+                    "end": time.fromisoformat(times.end)
+                }
+            else:
+                schedule_for_db[day_index] = {}
+
+        await database.add_or_update_employee(
+            telegram_id=request.telegram_id,
+            full_name=request.full_name,
+            schedule_data=schedule_for_db,
+            effective_date=request.effective_date
+        )
+        logger.info(f"Сотрудник {request.full_name} ({request.telegram_id}) обновлен через веб-интерфейс.")
+        return {"status": "success", "message": "Данные сотрудника успешно обновлены."}
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении сотрудника через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера при обновлении: {e}")
+# --- КОНЕЦ НОВЫХ ЭНДПОИНТОВ ---
 
 
 # --- НОВЫЙ ЭНДПОИНТ для добавления сотрудника ---

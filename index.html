@@ -13,12 +13,21 @@
         main {
             padding-bottom: 2rem;
         }
-        /* Стили для статусов в таблице отчета */
-        .status-late { background-color: #a66a00; }
-        .status-absent { background-color: #b82525; }
-        .status-leave { background-color: #3e65a3; }
-        #report-container { overflow-x: auto; } /* Прокрутка для широких таблиц */
-
+        #report-container { overflow-x: auto; }
+        
+        /* Зеленый для "Вовремя" */
+        .status-ontime { background-color: #2a9d8f}
+        /* Оранжевый для "Опоздал" */
+        .status-late { background-color: #e76f51}
+        /* Красный для пропусков и проблем */
+        .status-absent { background-color: #e63946}
+        /* Синий для отпусков/больничных */
+        .status-leave { background-color: #5252b9}
+        /* Фиолетовый для праздников */
+        .status-holiday { background-color: #8349a9}
+        /* Серый для выходных */
+        .status-dayoff { background-color: #38514e }
+        
         /* Стили для кнопок действий */
         .action-btn { 
             --pico-font-size: 0.85em; 
@@ -57,6 +66,28 @@
             content: ' ▼';
             font-size: 0.8em;
         }
+        /* --- НОВЫЕ СТИЛИ ДЛЯ ЗАКРЕПЛЕННОГО СТОЛБЦА --- */
+        #report-table th:first-child,
+        #report-table td:first-child {
+            position: -webkit-sticky; /* Для совместимости с Safari */
+            position: sticky;
+            left: 0;
+            /* Важно: фон, чтобы контент под ним не просвечивал при прокрутке */
+            background-color: var(--pico-card-background-color);
+        }
+
+        /* Делаем заголовок таблицы выше, чтобы он был над ячейками */
+        #report-table thead th {
+            z-index: 3;
+        }
+        
+        #report-table td:first-child {
+            z-index: 1;
+        }
+        /* --- КОНЕЦ НОВЫХ СТИЛЕЙ --- */
+        #holidays-list li { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+        #holidays-list span { flex-grow: 1; }
+        #holidays-list button { margin-left: 1rem; }
     </style>
 </head>
 <body>
@@ -73,6 +104,7 @@
                     <input type="search" id="search-input" name="search" placeholder="Поиск по ФИО...">
                     <button id="add-employee-btn" data-target="add-employee-modal">➕ Добавить сотрудника</button>
                 </div>
+
                 <div id="loading-employees" aria-busy="true">Загрузка данных...</div>
                 <table id="employees-table" style="display: none;">
                     <thead>
@@ -85,7 +117,26 @@
                     <tbody id="employees-tbody"></tbody>
                 </table>
             </details>
-            
+
+            <details>
+                <summary><strong>Управление праздниками</strong></summary>
+                <div class="grid">
+                    <label for="holiday-year-select">
+                        Год
+                        <select id="holiday-year-select"></select>
+                    </label>
+                </div>
+                <div id="holidays-loading" aria-busy="true" style="display: none;">Загрузка праздников...</div>
+                <ul id="holidays-list"></ul>
+                <form id="add-holiday-form" style="margin-top: 1rem;">
+                    <fieldset class="grid">
+                        <input type="date" id="new-holiday-date" required>
+                        <input type="text" id="new-holiday-name" placeholder="Название праздника" required>
+                        <button type="submit">Добавить праздник</button>
+                    </fieldset>
+                </form>
+            </details>
+
             <details open>
                 <summary><strong>Сводный отчет за месяц</strong></summary>
                 <form id="report-form">
@@ -140,6 +191,50 @@
                 <p id="add-employee-error" style="color: var(--pico-color-red); display: none;"></p>
                 <footer>
                     <button type="submit">✅ Сохранить</button>
+                </footer>
+            </form>
+        </article>
+    </dialog>
+    
+    <dialog id="edit-employee-modal">
+        <article class="modal-body">
+            <header>
+                <a href="#close" aria-label="Close" class="close" data-target="edit-employee-modal"></a>
+                <strong id="edit-modal-header">Редактирование сотрудника</strong>
+            </header>
+            <div id="edit-form-loading" aria-busy="true" style="display: none;">Загрузка данных сотрудника...</div>
+            <form id="edit-employee-form" style="display: none;">
+                <input type="hidden" id="edit-employee-original-id">
+                
+                <label for="edit-employee-id">Telegram ID (нельзя изменить)</label>
+                <input type="number" id="edit-employee-id" readonly>
+
+                <label for="edit-employee-name">ФИО</label>
+                <input type="text" id="edit-employee-name" required>
+
+                <label for="edit-effective-date">Применить новый график с даты</label>
+                <input type="date" id="edit-effective-date" required>
+                
+                <p><strong>График работы</strong> (в формате `09:00-18:00`, для выходного введите `0`)</p>
+                <div class="grid">
+                    <label>ПН <input type="text" class="edit-schedule-input" data-day="0"></label>
+                    <label>ВТ <input type="text" class="edit-schedule-input" data-day="1"></label>
+                </div>
+                <div class="grid">
+                    <label>СР <input type="text" class="edit-schedule-input" data-day="2"></label>
+                    <label>ЧТ <input type="text" class="edit-schedule-input" data-day="3"></label>
+                </div>
+                <div class="grid">
+                    <label>ПТ <input type="text" class="edit-schedule-input" data-day="4"></label>
+                    <label>СБ <input type="text" class="edit-schedule-input" data-day="5"></label>
+                </div>
+                <div class="grid">
+                    <label>ВС <input type="text" class="edit-schedule-input" data-day="6"></label>
+                </div>
+                
+                <p id="edit-employee-error" style="color: var(--pico-color-red); display: none;"></p>
+                <footer>
+                    <button type="submit">💾 Сохранить изменения</button>
                 </footer>
             </form>
         </article>
@@ -224,10 +319,12 @@
         function initializePage() {
             loadEmployees();
             setupDateSelector();
-            
+            setupHolidayManager();
+
             // --- РЕГИСТРАЦИЯ ВСЕХ ОБРАБОТЧИКОВ ---
             document.getElementById('add-employee-btn').addEventListener('click', () => document.getElementById('add-employee-modal').showModal());
             document.getElementById('add-employee-form').addEventListener('submit', handleAddEmployeeSubmit);
+            document.getElementById('edit-employee-form').addEventListener('submit', handleEditEmployeeSubmit);
             document.getElementById('search-input').addEventListener('input', handleSearchInput);
             document.querySelector('#employees-table thead').addEventListener('click', handleSortClick);
             document.getElementById('employees-tbody').addEventListener('click', handleEmployeeActionClick);
@@ -235,6 +332,11 @@
             document.getElementById('leave-form').addEventListener('submit', handleLeaveFormSubmit);
             document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => e.target.closest('form').requestSubmit(e.target));
             
+
+            document.getElementById('holiday-year-select').addEventListener('change', loadHolidays);
+            document.getElementById('add-holiday-form').addEventListener('submit', handleAddHoliday);
+            document.getElementById('holidays-list').addEventListener('click', handleDeleteHoliday);
+
             // Универсальный обработчик для закрытия модальных окон
             document.addEventListener('click', (e) => {
                 if(e.target.matches(".close")) {
@@ -243,6 +345,86 @@
                 }
             });
         }
+        // --- НОВЫЙ БЛОК ФУНКЦИЙ ДЛЯ УПРАВЛЕНИЯ ПРАЗДНИКАМИ ---
+        function setupHolidayManager() {
+            const yearSelect = document.getElementById('holiday-year-select');
+            const currentYear = new Date().getFullYear();
+            for (let i = currentYear + 1; i >= currentYear - 2; i--) {
+                const option = new Option(i, i);
+                if (i === currentYear) option.selected = true;
+                yearSelect.add(option);
+            }
+            loadHolidays();
+        }
+
+        function loadHolidays() {
+            const year = document.getElementById('holiday-year-select').value;
+            const list = document.getElementById('holidays-list');
+            const loading = document.getElementById('holidays-loading');
+            
+            list.innerHTML = '';
+            loading.style.display = 'block';
+
+            fetch(`/api/holidays/${year}`)
+                .then(response => {
+                    if (!response.ok) return [];
+                    return response.json();
+                })
+                .then(data => {
+                    data.forEach(holiday => {
+                        const li = document.createElement('li');
+                        const date = new Date(holiday.holiday_date).toLocaleDateString('ru-RU');
+                        li.innerHTML = `
+                            <span><strong>${date}</strong> - ${holiday.holiday_name}</span>
+                            <button class="secondary outline" data-date="${holiday.holiday_date}">Удалить</button>
+                        `;
+                        list.appendChild(li);
+                    });
+                })
+                .catch(error => console.error("Ошибка загрузки праздников:", error))
+                .finally(() => loading.style.display = 'none');
+        }
+
+        function handleAddHoliday(event) {
+            event.preventDefault();
+            const date = document.getElementById('new-holiday-date').value;
+            const name = document.getElementById('new-holiday-name').value;
+            if (!date || !name) {
+                alert('Пожалуйста, заполните дату и название праздника.');
+                return;
+            }
+            
+            fetch('/api/holidays/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ holiday_date: date, holiday_name: name })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Ошибка при добавлении праздника');
+                document.getElementById('add-holiday-form').reset();
+                loadHolidays();
+            })
+            .catch(error => alert(error.message));
+        }
+
+        function handleDeleteHoliday(event) {
+            if (event.target.tagName !== 'BUTTON') return;
+            const date = event.target.dataset.date;
+            if (!confirm(`Вы уверены, что хотите удалить праздник ${date}?`)) return;
+
+            fetch('/api/holidays/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ holiday_date: date })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Ошибка при удалении праздника');
+                loadHolidays();
+            })
+            .catch(error => alert(error.message));
+        }
+        // --- КОНЕЦ НОВОГО БЛОКА ---
+
 
         // --- ДОБАВЛЕНИЕ СОТРУДНИКА ---
         function handleAddEmployeeSubmit(event) {
@@ -252,7 +434,6 @@
             const errorDiv = document.getElementById('add-employee-error');
             errorDiv.style.display = 'none';
 
-            // Собираем график
             const schedule = {};
             let isScheduleValid = true;
             const timePattern = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
@@ -260,6 +441,7 @@
             form.querySelectorAll('.schedule-input').forEach(input => {
                 const day = input.dataset.day;
                 const value = input.value.trim();
+                input.setAttribute('aria-invalid', 'false');
                 if (value === '0' || value === '') {
                     schedule[day] = {};
                 } else if (timePattern.test(value)) {
@@ -318,6 +500,72 @@
             });
         }
 
+        // --- РЕДАКТИРОВАНИЕ СОТРУДНИКА ---
+        function handleEditEmployeeSubmit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const submitButton = form.querySelector('button[type="submit"]');
+            const errorDiv = document.getElementById('edit-employee-error');
+            errorDiv.style.display = 'none';
+
+            const schedule = {};
+            let isScheduleValid = true;
+            const timePattern = /^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$/;
+            
+            form.querySelectorAll('.edit-schedule-input').forEach(input => {
+                const day = input.dataset.day;
+                const value = input.value.trim();
+                input.setAttribute('aria-invalid', 'false');
+                if (value === '0' || value === '') {
+                    schedule[day] = {};
+                } else if (timePattern.test(value)) {
+                    const [start, end] = value.split('-');
+                    schedule[day] = { start, end };
+                } else {
+                    isScheduleValid = false;
+                    input.setAttribute('aria-invalid', 'true');
+                }
+            });
+
+            if (!isScheduleValid) {
+                errorDiv.textContent = 'Ошибка: Неверный формат времени в графике. Используйте ЧЧ:ММ-ЧЧ:ММ или 0.';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            const requestBody = {
+                telegram_id: parseInt(document.getElementById('edit-employee-id').value),
+                full_name: document.getElementById('edit-employee-name').value,
+                effective_date: document.getElementById('edit-effective-date').value,
+                schedule: schedule
+            };
+            
+            submitButton.setAttribute('aria-busy', 'true');
+            submitButton.disabled = true;
+
+            fetch('/api/employees/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => {
+                if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Ошибка сервера') });
+                return response.json();
+            })
+            .then(result => {
+                alert(`Успешно: ${result.message}`);
+                document.getElementById('edit-employee-modal').close();
+                loadEmployees(); // Обновляем список
+            })
+            .catch(error => {
+                errorDiv.textContent = `Ошибка: ${error.message}`;
+                errorDiv.style.display = 'block';
+            })
+            .finally(() => {
+                submitButton.removeAttribute('aria-busy');
+                submitButton.disabled = false;
+            });
+        }
 
         // --- ПОИСК И СОРТИРОВКА ---
         function handleSearchInput(event) {
@@ -382,6 +630,7 @@
                             <td>${employee.id}</td>
                             <td>${employee.full_name}</td>
                             <td>
+                                <button class="action-btn" data-action="edit" data-id="${employee.id}">Изменить</button>
                                 <button class="action-btn" data-action="manage-leave" data-id="${employee.id}" data-name="${employee.full_name}">Отсутствие</button>
                                 <button class="action-btn delete-btn" data-action="deactivate" data-id="${employee.id}">Удалить</button>
                             </td>
@@ -412,7 +661,45 @@
                 document.getElementById('leave-modal-header').textContent = `Отсутствие: ${employeeName}`;
                 document.getElementById('leave-employee-id').value = employeeId;
                 modal.showModal();
+            } else if (action === 'edit') {
+                openEditModalFor(employeeId);
             }
+        }
+
+        function openEditModalFor(employeeId) {
+            const modal = document.getElementById('edit-employee-modal');
+            const form = document.getElementById('edit-employee-form');
+            const loading = document.getElementById('edit-form-loading');
+            const errorDiv = document.getElementById('edit-employee-error');
+            
+            form.style.display = 'none';
+            loading.style.display = 'block';
+            errorDiv.style.display = 'none';
+            modal.showModal();
+
+            fetch(`/api/employees/${employeeId}`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Не удалось загрузить данные сотрудника');
+                    return response.json();
+                })
+                .then(data => {
+                    document.getElementById('edit-employee-id').value = data.telegram_id;
+                    document.getElementById('edit-employee-name').value = data.full_name;
+                    document.getElementById('edit-effective-date').value = new Date().toISOString().split('T')[0];
+
+                    form.querySelectorAll('.edit-schedule-input').forEach(input => {
+                        const day = input.dataset.day;
+                        input.value = data.schedule[day] || '0';
+                    });
+
+                    loading.style.display = 'none';
+                    form.style.display = 'block';
+                })
+                .catch(err => {
+                    loading.style.display = 'none';
+                    errorDiv.textContent = err.message;
+                    errorDiv.style.display = 'block';
+                });
         }
         
         function deactivateEmployee(id, button) {
@@ -550,11 +837,22 @@
                 rowData.forEach((cellData, index) => {
                     const cell = document.createElement('td');
                     cell.textContent = cellData;
-                    if (index > 0) {
+                    if (index > 0) { // Применяем классы только к ячейкам с датами
                         const status = cellData.toLowerCase();
-                        if (status.includes('опоздал')) cell.className = 'status-late';
-                        else if (status.includes('прогул') || status.includes('пропустил')) cell.className = 'status-absent';
-                        else if (status.includes('отпуск') || status.includes('больничный') || status.includes('отпросился')) cell.className = 'status-leave';
+                        // Устанавливаем приоритет для цветов: проблемы > опоздания > отгулы > успех > спец. статусы
+                        if (status.includes('прогул') || status.includes('пропустил') || status.includes('не завершил')) {
+                            cell.className = 'status-absent';
+                        } else if (status.includes('опоздал')) {
+                            cell.className = 'status-late';
+                        } else if (status.includes('отпуск') || status.includes('больничный') || status.includes('отпросился')) {
+                            cell.className = 'status-leave';
+                        } else if (status.includes('вовремя')) {
+                            cell.className = 'status-ontime';
+                        } else if (status.includes('праздник')) {
+                            cell.className = 'status-holiday';
+                        } else if (status.includes('выходной')) {
+                            cell.className = 'status-dayoff';
+                        }
                     }
                     row.appendChild(cell);
                 });

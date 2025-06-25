@@ -12,7 +12,7 @@ from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, 
 from telegram.ext import ContextTypes, ConversationHandler
 
 from jobs import send_report_for_period
-from keyboards import admin_menu_keyboard, reports_menu_keyboard, leave_type_keyboard
+from keyboards import admin_menu_keyboard, reports_menu_keyboard, leave_type_keyboard, holidays_menu_keyboard
 from keyboards import (
     BUTTON_LEAVE_TYPE_VACATION, BUTTON_LEAVE_TYPE_SICK
 )
@@ -22,7 +22,8 @@ from config import (
     ADD_GET_ID, ADD_GET_NAME, MODIFY_GET_ID, DELETE_GET_ID, DELETE_CONFIRM,
     SCHEDULE_MON, DAYS_OF_WEEK, BUTTON_ADMIN_BACK, BUTTON_CONFIRM_DELETE, BUTTON_CANCEL_DELETE,
     LEAVE_GET_ID, LEAVE_GET_TYPE, LEAVE_GET_PERIOD, CANCEL_LEAVE_GET_ID, CANCEL_LEAVE_GET_PERIOD,
-    SCHEDULE_GET_EFFECTIVE_DATE, LOCAL_TIMEZONE
+    SCHEDULE_GET_EFFECTIVE_DATE, LOCAL_TIMEZONE,
+    HOLIDAY_MENU, HOLIDAY_GET_ADD_DATE, HOLIDAY_GET_ADD_NAME, HOLIDAY_GET_DELETE_DATE
 )
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,80 @@ async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Удаление отменено.", reply_markup=admin_menu_keyboard())
     context.user_data.clear()
     return ADMIN_MENU
+
+# --- НОВЫЙ БЛОК: УПРАВЛЕНИЕ ПРАЗДНИКАМИ ---
+
+async def admin_holidays_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отображает меню управления праздниками."""
+    await update.message.reply_text(
+        "Выберите действие:",
+        reply_markup=holidays_menu_keyboard()
+    )
+    return HOLIDAY_MENU
+
+async def holiday_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс добавления праздника."""
+    await update.message.reply_text(
+        "Введите дату нового праздника в формате `ДД.ММ.ГГГГ`:",
+        parse_mode='MarkdownV2',
+        reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
+    )
+    return HOLIDAY_GET_ADD_DATE
+
+async def holiday_get_add_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает дату и запрашивает название праздника."""
+    try:
+        holiday_date = datetime.strptime(update.message.text.strip(), '%d.%m.%Y').date()
+        context.user_data['holiday_date'] = holiday_date
+        await update.message.reply_text("Отлично. Теперь введите название праздника (например, 'Новый год'):")
+        return HOLIDAY_GET_ADD_NAME
+    except ValueError:
+        await update.message.reply_text("Неверный формат. Пожалуйста, введите дату как `ДД.ММ.ГГГГ` и попробуйте снова.", parse_mode='MarkdownV2')
+        return HOLIDAY_GET_ADD_DATE
+
+async def holiday_get_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает название, сохраняет праздник и завершает диалог."""
+    holiday_name = update.message.text.strip()
+    holiday_date = context.user_data.get('holiday_date')
+
+    if not holiday_name or not holiday_date:
+        await update.message.reply_text("Произошла ошибка, попробуйте снова.", reply_markup=admin_menu_keyboard())
+        context.user_data.clear()
+        return ADMIN_MENU
+
+    await database.add_holiday(holiday_date, holiday_name)
+    
+    await update.message.reply_text(
+        f"✅ Праздник '{holiday_name}' на дату {holiday_date.strftime('%d.%m.%Y')} успешно добавлен!",
+        reply_markup=admin_menu_keyboard()
+    )
+    context.user_data.clear()
+    return ADMIN_MENU
+
+async def holiday_delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс удаления праздника."""
+    await update.message.reply_text(
+        "Введите дату праздника для удаления в формате `ДД.ММ.ГГГГ`:",
+        parse_mode='MarkdownV2',
+        reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
+    )
+    return HOLIDAY_GET_DELETE_DATE
+
+async def holiday_get_delete_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получает дату, удаляет праздник и завершает диалог."""
+    try:
+        holiday_date = datetime.strptime(update.message.text.strip(), '%d.%m.%Y').date()
+        await database.delete_holiday(holiday_date)
+        await update.message.reply_text(
+            f"✅ Праздник на дату {holiday_date.strftime('%d.%m.%Y')} (если он существовал) был удален.",
+            reply_markup=admin_menu_keyboard()
+        )
+        context.user_data.clear()
+        return ADMIN_MENU
+    except ValueError:
+        await update.message.reply_text("Неверный формат. Пожалуйста, введите дату как `ДД.ММ.ГГГГ` и попробуйте снова.", parse_mode='MarkdownV2')
+        return HOLIDAY_GET_DELETE_DATE
+# --- КОНЕЦ НОВОГО БЛОКА ---
 
 def schedule_handler_factory(day_index: int):
     # ... (скопируйте сюда содержимое функции schedule_handler_factory из bot.py)
