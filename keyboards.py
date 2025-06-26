@@ -5,25 +5,29 @@ from config import (
     BUTTON_ADMIN_DELETE, BUTTON_ADMIN_REPORTS, BUTTON_REPORT_TODAY,
     BUTTON_REPORT_YESTERDAY, BUTTON_REPORT_WEEK, BUTTON_REPORT_CUSTOM,
     BUTTON_REPORT_EXPORT, BUTTON_REPORT_MONTHLY_CSV, BUTTON_ADMIN_BACK,
-    BUTTON_LEAVE_TYPE_VACATION, BUTTON_LEAVE_TYPE_SICK, BUTTON_MANAGE_HOLIDAYS, BUTTON_MANAGE_LEAVE, BUTTON_CANCEL_LEAVE, BUTTON_UPDATE_PHOTO
+    BUTTON_LEAVE_TYPE_VACATION, BUTTON_LEAVE_TYPE_SICK, BUTTON_MANAGE_HOLIDAYS, BUTTON_MANAGE_LEAVE,
+    BUTTON_CANCEL_LEAVE, BUTTON_UPDATE_PHOTO, BUTTON_MY_SCHEDULE, BUTTON_CANCEL_ACTION,
+    BUTTON_MY_STATS
 )
 
 def main_menu_keyboard():
-
+    """Клавиатура главного меню для сотрудника."""
     return ReplyKeyboardMarkup(
         [
             [BUTTON_ARRIVAL, BUTTON_DEPARTURE],
-            [BUTTON_ASK_LEAVE, BUTTON_UPDATE_PHOTO]
+            [BUTTON_ASK_LEAVE, BUTTON_UPDATE_PHOTO],
+            [BUTTON_MY_SCHEDULE, BUTTON_MY_STATS]
         ],
         resize_keyboard=True
     )
+
 def admin_menu_keyboard():
     # Немного перекомпонуем для лучшего вида
     return ReplyKeyboardMarkup([
         [BUTTON_ADMIN_ADD, BUTTON_ADMIN_MODIFY],
         [BUTTON_ADMIN_DELETE, BUTTON_ADMIN_REPORTS],
         [BUTTON_MANAGE_LEAVE, BUTTON_CANCEL_LEAVE],
-        [BUTTON_MANAGE_HOLIDAYS] # <-- Новая кнопка на отдельной строке
+        [BUTTON_MANAGE_HOLIDAYS]
     ], resize_keyboard=True)
 
 def reports_menu_keyboard():
@@ -40,7 +44,6 @@ def leave_type_keyboard():
         [BUTTON_ADMIN_BACK]
     ], resize_keyboard=True)
 
-# --- НОВАЯ КЛАВИАТУРА ---
 def holidays_menu_keyboard():
     """Клавиатура для меню управления праздниками."""
     return ReplyKeyboardMarkup([
@@ -48,4 +51,10 @@ def holidays_menu_keyboard():
         ["➖ Удалить праздник"],
         [BUTTON_ADMIN_BACK]
     ], resize_keyboard=True)
-# --- КОНЕЦ НОВОЙ КЛАВИАТУРЫ ---
+
+def cancel_action_keyboard():
+    """Клавиатура с единственной кнопкой 'Отмена'."""
+    return ReplyKeyboardMarkup(
+        [[BUTTON_CANCEL_ACTION]],
+        resize_keyboard=True
+    )

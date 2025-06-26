@@ -2,6 +2,7 @@
 import logging
 import asyncio
 import random
+import re
 import face_recognition
 import numpy as np
 import database
@@ -16,13 +17,13 @@ from telegram.ext import ContextTypes, ConversationHandler
 from geopy.distance import geodesic
 
 from database import is_day_finished_for_user
-from decorators import check_active_employee
-from keyboards import main_menu_keyboard
+from decorators import check_active_employee, user_level_cooldown
+from keyboards import main_menu_keyboard, cancel_action_keyboard
 
 from config import (
     CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE, LIVENESS_ACTIONS,
     BUTTON_ARRIVAL, BUTTON_DEPARTURE, WORK_LOCATION_COORDS, ALLOWED_RADIUS_METERS,
-    AWAITING_LEAVE_REASON, ADMIN_IDS, AWAITING_NEW_FACE_PHOTO
+    AWAITING_LEAVE_REASON, ADMIN_IDS, AWAITING_NEW_FACE_PHOTO, BUTTON_CANCEL_ACTION
 )
 
 def _face_recognition_worker(image_bytes: bytes) -> np.ndarray | None:
@@ -150,7 +151,10 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Общая логика для всех "приходов"
     action = random.choice(LIVENESS_ACTIONS)
     context.user_data["checkin_type"] = "ARRIVAL"
-    await update.message.reply_text(f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.", 
+        reply_markup=cancel_action_keyboard()
+    )
     return AWAITING_PHOTO
 
 async def handle_late_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -160,7 +164,7 @@ async def handle_late_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["is_late"] = True # Устанавливаем флаг опоздания
     await update.message.reply_text(
         f"Для подтверждения опоздания, пожалуйста, {action} и сделайте селфи.", 
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=cancel_action_keyboard()
     )
     return AWAITING_PHOTO
 
@@ -178,7 +182,10 @@ async def ask_leave_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Вы не можете отпроситься, так как еще не отметили приход сегодня.")
         return CHOOSE_ACTION # Остаемся в главном состоянии
 
-    await update.message.reply_text("Пожалуйста, укажите причину, по которой вы хотите уйти раньше.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "Пожалуйста, укажите причину, по которой вы хотите уйти раньше.", 
+        reply_markup=cancel_action_keyboard()
+    )
     return AWAITING_LEAVE_REASON
 
 @check_active_employee
@@ -215,6 +222,56 @@ async def ask_leave_get_reason(update: Update, context: ContextTypes.DEFAULT_TYP
     
     return config.CHOOSE_ACTION
 
+@user_level_cooldown(60)
+@check_active_employee
+async def show_my_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отображает текущий рабочий график сотрудника."""
+    user = update.effective_user
+    await update.message.reply_text("Загружаю ваш график...")
+
+    employee_data = await database.get_employee_with_schedule(user.id)
+
+    if not employee_data or not employee_data.get('schedule') or not any(v and v != '0' for v in employee_data['schedule'].values()):
+        await update.message.reply_text(
+            "Ваш график еще не был настроен. Пожалуйста, обратитесь к администратору.",
+            reply_markup=main_menu_keyboard()
+        )
+        return CHOOSE_ACTION
+
+    schedule = employee_data['schedule']
+    effective_date = employee_data.get('schedule_effective_date')
+
+    # Вспомогательная функция для экранирования символов, специальных для MarkdownV2
+    def escape_markdown_v2(text: str) -> str:
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+
+    date_str_escaped = ""
+    if effective_date:
+        date_str = f" (действует с {effective_date.strftime('%d.%m.%Y')})"
+        date_str_escaped = escape_markdown_v2(date_str)
+
+    message_lines = [f"*Ваш текущий график*{date_str_escaped}\n"]
+
+    for i, day_name in enumerate(config.DAYS_OF_WEEK):
+        # Обрабатываем ключи типа int и str для совместимости
+        day_schedule = schedule.get(i, schedule.get(str(i)))
+        
+        if day_schedule and day_schedule != "0":
+            schedule_text = escape_markdown_v2(day_schedule)
+        else:
+            schedule_text = "_Выходной_"
+            
+        message_lines.append(f"*{escape_markdown_v2(day_name)}:* {schedule_text}")
+
+    await update.message.reply_text(
+        text="\n".join(message_lines),
+        parse_mode='MarkdownV2',
+        reply_markup=main_menu_keyboard()
+    )
+    
+    return CHOOSE_ACTION
+
 @check_active_employee
 async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
@@ -239,7 +296,10 @@ async def handle_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     action = random.choice(LIVENESS_ACTIONS)
     context.user_data["checkin_type"] = "DEPARTURE"
-    await update.message.reply_text(f"Для подтверждения ухода, пожалуйста, {action} и сделайте селфи.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        f"Для подтверждения ухода, пожалуйста, {action} и сделайте селфи.", 
+        reply_markup=cancel_action_keyboard()
+    )
     return AWAITING_PHOTO
 
 @check_active_employee
@@ -248,7 +308,7 @@ async def update_photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "Вы начали процесс обновления фото.\n\n"
         "Пожалуйста, сделайте и отправьте новое селфи хорошего качества, где хорошо видно ваше лицо.",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=cancel_action_keyboard()
     )
     return AWAITING_NEW_FACE_PHOTO
 
@@ -309,10 +369,18 @@ async def update_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @check_active_employee
 async def awaiting_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции awaiting_photo из bot.py)
     context.user_data['photo_file_id'] = update.message.photo[-1].file_id
-    location_keyboard = [[KeyboardButton("Отправить мою геолокацию 📍", request_location=True)]]
-    await update.message.reply_text("Отлично, фото получил. Теперь, пожалуйста, подтвердите вашу геолокацию.", reply_markup=ReplyKeyboardMarkup(location_keyboard, resize_keyboard=True, one_time_keyboard=True))
+    location_keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("Отправить мою геолокацию 📍", request_location=True)],
+            [KeyboardButton(BUTTON_CANCEL_ACTION)]
+        ], 
+        resize_keyboard=True
+    )
+    await update.message.reply_text(
+        "Отлично, фото получил. Теперь, пожалуйста, подтвердите вашу геолокацию.", 
+        reply_markup=location_keyboard
+    )
     return AWAITING_LOCATION
 
 @check_active_employee
@@ -372,6 +440,7 @@ async def awaiting_location(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return CHOOSE_ACTION
 
 @check_active_employee
+@user_level_cooldown(60)
 async def get_personal_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет сотруднику его статистику за текущий месяц."""
     user_id = update.effective_user.id
@@ -393,13 +462,12 @@ async def get_personal_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(report_text, parse_mode='Markdown')
 
 async def employee_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции employee_cancel_command из bot.py)
+    """Отменяет текущее действие и возвращает в главное меню."""
     await update.message.reply_text("Действие отменено.", reply_markup=main_menu_keyboard())
     context.user_data.clear()
     return CHOOSE_ACTION
 
 async def late_checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (скопируйте сюда содержимое функции late_checkin_callback из bot.py)
     query = update.callback_query
     await query.answer()
     action = random.choice(LIVENESS_ACTIONS)

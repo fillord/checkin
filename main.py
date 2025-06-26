@@ -12,19 +12,24 @@ from telegram.ext import (
     filters,
     ConversationHandler,
     PicklePersistence,
-    CallbackQueryHandler
+    CallbackQueryHandler,
+    AIORateLimiter
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from functools import partial
 from config import (
-    SCHEDULE_GET_EFFECTIVE_DATE
+    SCHEDULE_GET_EFFECTIVE_DATE,
+    BUTTON_MY_SCHEDULE,
+    BUTTON_CANCEL_ACTION,
+    BUTTON_MY_STATS
 )
 from app_context import shutdown_executor
 from keyboards import admin_menu_keyboard, reports_menu_keyboard
 from handlers_user import (
     start_command, late_checkin_callback, handle_arrival, handle_departure,
     register_face, awaiting_photo, awaiting_location, employee_cancel_command,
-    handle_late_checkin, ask_leave_start, ask_leave_get_reason, update_photo_start, update_photo_receive, get_personal_stats
+    handle_late_checkin, ask_leave_start, ask_leave_get_reason, update_photo_start,
+    update_photo_receive, get_personal_stats, show_my_schedule
 )
 from handlers_admin import (
     admin_command, admin_reports_menu, admin_get_today_report, admin_get_yesterday_report,
@@ -48,27 +53,51 @@ async def main() -> None:
     """Основная функция для запуска бота."""
     try:
         persistence = PicklePersistence(filepath=config.PERSISTENCE_FILE)
-        application = Application.builder().token(config.BOT_TOKEN).persistence(persistence).build()
-        
-        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ (без изменений) ---
+
+        # Создаем глобальный ограничитель: не более 5 сообщений за 5 секунд на пользователя
+        rate_limiter = AIORateLimiter(max_retries=5)
+
+        application = (
+            Application.builder()
+            .token(config.BOT_TOKEN)
+            .persistence(persistence)
+            .rate_limiter(rate_limiter) # <-- ДОБАВЛЯЕМ ОГРАНИЧИТЕЛЬ
+            .build()
+        )
+
+        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
         checkin_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start_command),
-                # УДАЛЯЕМ СТАРУЮ ТОЧКУ ВХОДА ДЛЯ ИНЛАЙН-КНОПКИ
-                # CallbackQueryHandler(late_checkin_callback, pattern="^late_checkin$")
-                MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start) 
+                MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start)
             ],
             states={
                 config.CHOOSE_ACTION: [
-                    MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival), 
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_UPDATE_PHOTO}$"), update_photo_start),
+                    MessageHandler(filters.Regex(f"^{BUTTON_MY_SCHEDULE}$"), show_my_schedule),
+                    MessageHandler(filters.Regex(f"^{BUTTON_MY_STATS}$"), get_personal_stats),
                 ],
-                config.AWAITING_LEAVE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)],
-                config.REGISTER_FACE: [MessageHandler(filters.PHOTO, register_face)],
-                config.AWAITING_NEW_FACE_PHOTO: [MessageHandler(filters.PHOTO, update_photo_receive)],
-                config.AWAITING_PHOTO: [MessageHandler(filters.PHOTO, awaiting_photo)],
-                config.AWAITING_LOCATION: [MessageHandler(filters.LOCATION, awaiting_location)],
+                config.AWAITING_LEAVE_REASON: [
+                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)
+                ],
+                config.REGISTER_FACE: [
+                    MessageHandler(filters.PHOTO, register_face)
+                ],
+                config.AWAITING_NEW_FACE_PHOTO: [
+                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.PHOTO, update_photo_receive)
+                ],
+                config.AWAITING_PHOTO: [
+                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.PHOTO, awaiting_photo)
+                ],
+                config.AWAITING_LOCATION: [
+                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.LOCATION, awaiting_location)
+                ],
             },
             fallbacks=[CommandHandler("cancel", employee_cancel_command)],
             allow_reentry=True, name="checkin_conversation", persistent=True,
@@ -89,7 +118,7 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_REPORTS}$"), admin_reports_menu),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_LEAVE}$"), admin_add_leave_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_LEAVE}$"), admin_cancel_leave_start),
-                    MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_HOLIDAYS}$"), admin_holidays_menu), # <-- Новая точка входа
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_HOLIDAYS}$"), admin_holidays_menu),
                 ],
                 config.ADMIN_REPORTS_MENU: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_REPORT_TODAY}$"), admin_get_today_report),
@@ -192,14 +221,14 @@ async def main() -> None:
         scheduler = AsyncIOScheduler(timezone=config.LOCAL_TIMEZONE)
         scheduler.add_job(jobs.check_and_send_notifications, 'interval', minutes=1, args=[application])
         scheduler.add_job(jobs.send_daily_report_job, 'cron', hour=21, minute=0, args=[application])
-        
+
         # Запускаем проверку каждые 15 минут в течение всего дня, чтобы охватить любой график
         scheduler.add_job(jobs.send_departure_reminders, 'cron', hour='*', minute='*/5', args=[application])
         scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application]) # Применяем штраф в 00:05 за вчерашний день
 
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=14, minute=35, args=[application, 'midday'])
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=20, minute=00, args=[application, 'evening'])
-    
+
         async with application:
             await database.init_db()
             await application.initialize()
@@ -208,7 +237,7 @@ async def main() -> None:
             scheduler.start()
             logger.info("Бот и планировщик запущены. Нажмите Ctrl+C для остановки.")
             await asyncio.Event().wait()
-            
+
     finally:
         logger.info("Закрытие пула процессов...")
         shutdown_executor()

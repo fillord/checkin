@@ -1,5 +1,6 @@
 # decorators.py
 from functools import wraps
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -28,3 +29,32 @@ def check_active_employee(func):
         # Если сотрудник активен, выполняем основную функцию
         return await func(update, context, *args, **kwargs)
     return wrapper
+
+def user_level_cooldown(seconds: int):
+    """
+    Декоратор для установки персональной задержки (cooldown) на команду.
+    Не позволяет пользователю вызывать одну и ту же команду чаще, чем раз в N секунд.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+            user_id = update.effective_user.id
+            now = datetime.now()
+            
+            # Создаем уникальный ключ для каждой функции, чтобы задержки не пересекались
+            cooldown_key = f"cooldown_{func.__name__}_{user_id}"
+            
+            last_called = context.bot_data.get(cooldown_key, datetime.min)
+            
+            if now < last_called + timedelta(seconds=seconds):
+                remaining = (last_called + timedelta(seconds=seconds) - now).seconds
+                await update.message.reply_text(
+                    f"Эту команду можно использовать не чаще одного раза в {seconds} секунд. "
+                    f"Пожалуйста, подождите еще {remaining} сек."
+                )
+                return
+            
+            context.bot_data[cooldown_key] = now
+            return await func(update, context, *args, **kwargs)
+        return wrapper
+    return decorator

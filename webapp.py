@@ -8,10 +8,10 @@ import config
 import database
 import re
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Annotated
 
 from datetime import date, time
 from database import add_leave_period, cancel_leave_period
@@ -19,7 +19,8 @@ from database import add_leave_period, cancel_leave_period
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Pydantic модели для валидации данных ---
+
+# --- Pydantic модели (без изменений) ---
 class Employee(BaseModel):
     id: int
     full_name: str
@@ -37,8 +38,6 @@ class LeaveRequest(BaseModel):
     start_date: date
     end_date: date
 
-
-# --- НОВАЯ МОДЕЛЬ для добавления/редактирования сотрудника ---
 class ScheduleData(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
@@ -47,17 +46,16 @@ class EmployeeUpdateRequest(BaseModel):
     telegram_id: int
     full_name: str
     effective_date: date
-    schedule: Dict[str, ScheduleData] # График будет словарем: "0" (Пн) -> {"start": "09:00", "end": "18:00"}
+    schedule: Dict[str, ScheduleData]
 
     @field_validator('schedule')
     def validate_schedule_times(cls, v):
         time_pattern = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
         for day, times in v.items():
-            if times.start or times.end: # Если это не выходной
+            if times.start or times.end:
                 if not (times.start and times.end and time_pattern.match(times.start) and time_pattern.match(times.end)):
                     raise ValueError(f"Неверный формат времени для дня {day}. Используйте ЧЧ:ММ.")
         return v
-# --- КОНЕЦ НОВОЙ МОДЕЛИ ---
 
 class Holiday(BaseModel):
     holiday_date: date
@@ -66,14 +64,46 @@ class Holiday(BaseModel):
 class HolidayDeleteRequest(BaseModel):
     holiday_date: date
 
+# --- НОВАЯ ФУНКЦИЯ: ЗАЩИТНАЯ ЗАВИСИМОСТЬ ---
+async def get_validated_user(x_telegram_init_data: Annotated[str, Header()]) -> dict:
+    """
+    Проверяет подлинность данных Telegram из заголовка запроса.
+    Возвращает словарь с данными пользователя в случае успеха.
+    Вызывает HTTPException в случае ошибки, прерывая выполнение запроса.
+    """
+    try:
+        init_data = x_telegram_init_data
+        parsed_data = dict(urllib.parse.parse_qsl(init_data))
+        hash_from_telegram = parsed_data.pop('hash', '')
+        if not hash_from_telegram:
+            raise ValueError("Хэш отсутствует в initData")
+
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+        secret_key = hmac.new("WebAppData".encode(), config.BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(calculated_hash, hash_from_telegram):
+            logger.warning(f"Проверка данных не пройдена. Хэш не совпал.")
+            raise HTTPException(status_code=403, detail="Проверка данных не пройдена.")
+        
+        user_info = json.loads(urllib.parse.unquote(parsed_data.get('user', '{}')))
+        user_id = user_info.get('id')
+        
+        if user_id not in config.ADMIN_IDS:
+            raise HTTPException(status_code=403, detail="Доступ запрещен.")
+            
+        return user_info
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
+        logger.error(f"Критическая ошибка валидации пользователя: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail="Некорректные данные для авторизации.")
+
 # --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
 
 # --- API Эндпоинты (точки доступа к данным) ---
 
-# --- НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПРАЗДНИКОВ ---
 @app.get("/api/holidays/{year}", response_model=List[Holiday])
-async def get_holidays(year: int):
+async def get_holidays(year: int, user: Annotated[dict, Depends(get_validated_user)]):
     """Возвращает список праздников за указанный год."""
     try:
         return await database.get_holidays_for_year(year)
@@ -82,7 +112,7 @@ async def get_holidays(year: int):
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 @app.post("/api/holidays/add")
-async def add_new_holiday(request: Holiday):
+async def add_new_holiday(request: Holiday, user: Annotated[dict, Depends(get_validated_user)]):
     """Добавляет новый праздничный день."""
     try:
         await database.add_holiday(request.holiday_date, request.holiday_name)
@@ -92,7 +122,7 @@ async def add_new_holiday(request: Holiday):
         raise HTTPException(status_code=500, detail="Ошибка сервера при добавлении праздника.")
 
 @app.post("/api/holidays/delete")
-async def delete_existing_holiday(request: HolidayDeleteRequest):
+async def delete_existing_holiday(request: HolidayDeleteRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Удаляет праздничный день."""
     try:
         await database.delete_holiday(request.holiday_date)
@@ -100,11 +130,9 @@ async def delete_existing_holiday(request: HolidayDeleteRequest):
     except Exception as e:
         logger.error(f"Ошибка при удалении праздника: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Ошибка сервера при удалении праздника.")
-# --- КОНЕЦ НОВЫХ ЭНДПОИНТОВ ---
 
-# --- НОВЫЙ ЭНДПОИНТ ДЛЯ ПОЛУЧЕНИЯ ЛОГА ---
 @app.get("/api/employees/{employee_id}/log", response_model=List[dict])
-async def get_log_for_employee(employee_id: int, start_date: date, end_date: date):
+async def get_log_for_employee(employee_id: int, start_date: date, end_date: date, user: Annotated[dict, Depends(get_validated_user)]):
     """Возвращает детализированный лог событий для сотрудника."""
     try:
         if start_date > end_date:
@@ -115,29 +143,31 @@ async def get_log_for_employee(employee_id: int, start_date: date, end_date: dat
     except Exception as e:
         logger.error(f"Ошибка при получении лога для сотрудника {employee_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
-# --- КОНЕЦ НОВОГО ЭНДПОИНТА ---
 
 
 @app.get("/api/employees", response_model=List[Employee])
-async def get_employees(q: Optional[str] = None, sort_by: Optional[str] = 'full_name', sort_order: Optional[str] = 'asc'):
+async def get_employees(
+    user: Annotated[dict, Depends(get_validated_user)],
+    q: Optional[str] = None, 
+    sort_by: Optional[str] = 'full_name', 
+    sort_order: Optional[str] = 'asc'
+):
     """
     Возвращает список всех активных сотрудников, используя database.py с поиском и сортировкой.
     """
     try:
-        # Передаем параметры из запроса в нашу функцию для работы с БД
         db_employees = await database.get_all_active_employees(
             search_query=q, 
             sort_by=sort_by, 
             sort_order=sort_order
         )
-        # Преобразуем ответ БД в модель Pydantic
         return [Employee(id=emp['telegram_id'], full_name=emp['full_name'], is_active=emp['is_active']) for emp in db_employees]
     except Exception as e:
         logger.error(f"Ошибка при получении списка сотрудников через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 @app.get("/api/employees/{employee_id}")
-async def get_employee_details(employee_id: int):
+async def get_employee_details(employee_id: int, user: Annotated[dict, Depends(get_validated_user)]):
     """Возвращает детальную информацию о сотруднике, включая его последний график."""
     try:
         employee_data = await database.get_employee_with_schedule(employee_id)
@@ -148,13 +178,10 @@ async def get_employee_details(employee_id: int):
         logger.error(f"Ошибка при получении деталей сотрудника {employee_id} через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
-# --- НОВЫЙ ЭНДПОИНТ для обновления сотрудника ---
 @app.post("/api/employees/update")
-async def update_employee(request: EmployeeUpdateRequest):
+async def update_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Обновляет данные сотрудника и его график (создает новую версию)."""
     try:
-        # Эта логика полностью аналогична добавлению, т.к. add_or_update_employee
-        # обрабатывает и создание, и обновление. Мы просто вызываем ту же функцию.
         schedule_for_db = {}
         for day_index_str, times in request.schedule.items():
             day_index = int(day_index_str)
@@ -177,15 +204,11 @@ async def update_employee(request: EmployeeUpdateRequest):
     except Exception as e:
         logger.error(f"Ошибка при обновлении сотрудника через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка сервера при обновлении: {e}")
-# --- КОНЕЦ НОВЫХ ЭНДПОИНТОВ ---
 
-
-# --- НОВЫЙ ЭНДПОИНТ для добавления сотрудника ---
 @app.post("/api/employees/add")
-async def add_employee(request: EmployeeUpdateRequest):
+async def add_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Добавляет нового сотрудника и его график."""
     try:
-        # Преобразуем schedule из строк в объекты time для функции БД
         schedule_for_db = {}
         for day_index_str, times in request.schedule.items():
             day_index = int(day_index_str)
@@ -208,10 +231,9 @@ async def add_employee(request: EmployeeUpdateRequest):
     except Exception as e:
         logger.error(f"Ошибка при добавлении сотрудника через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка сервера при добавлении: {e}")
-# --- КОНЕЦ НОВОГО ЭНДПОИНТА ---
 
 @app.post("/api/employees/deactivate")
-async def deactivate_employee(request: DeactivateRequest):
+async def deactivate_employee(request: DeactivateRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Деактивирует сотрудника по его ID, используя database.py."""
     try:
         await database.set_employee_active_status(request.id, is_active=False)
@@ -222,7 +244,7 @@ async def deactivate_employee(request: DeactivateRequest):
         raise HTTPException(status_code=500, detail="Ошибка на сервере при деактивации сотрудника.")
 
 @app.post("/api/leaves/add")
-async def add_leave(request: LeaveRequest):
+async def add_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Назначает сотруднику период отсутствия."""
     try:
         await database.add_leave_period(
@@ -237,7 +259,7 @@ async def add_leave(request: LeaveRequest):
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
 
 @app.post("/api/leaves/cancel")
-async def cancel_leave(request: LeaveRequest):
+async def cancel_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_validated_user)]):
     """Отменяет период отсутствия для сотрудника."""
     try:
         rows_deleted = await database.cancel_leave_period(
@@ -251,44 +273,36 @@ async def cancel_leave(request: LeaveRequest):
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
 
 @app.get("/api/reports/monthly/{year}/{month}")
-async def get_monthly_report(year: int, month: int):
+async def get_monthly_report(year: int, month: int, user: Annotated[dict, Depends(get_validated_user)]):
     """Возвращает данные для сводного отчета за месяц, используя database.py."""
     try:
         report_data = await database.get_monthly_summary_data(year, month)
         if not report_data or len(report_data) <= 1:
-            raise HTTPException(status_code=404, detail="Нет данных за указанный период")
+            # Возвращаем пустые данные вместо 404, чтобы фронтенд мог отобразить "Нет данных"
+            return {"data": []}
         return {"data": report_data}
     except Exception as e:
         logger.error(f"Ошибка при формировании месячного отчета через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 @app.post("/api/validate_user")
-async def validate_user(request: AuthRequest):
-    """Проверяет подлинность данных, полученных от Telegram Web App."""
+async def validate_user_initial(request: AuthRequest):
+    """
+    Первичная проверка пользователя при загрузке WebApp.
+    Использует ту же логику, что и зависимость, но для первого запроса.
+    """
     try:
-        init_data = request.initData
-        parsed_data = dict(urllib.parse.parse_qsl(init_data))
-        hash_from_telegram = parsed_data.pop('hash', '')
-        if not hash_from_telegram:
-            raise ValueError("Хэш отсутствует в initData")
-        
-        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
-        secret_key = hmac.new("WebAppData".encode(), config.BOT_TOKEN.encode(), hashlib.sha256).digest()
-        calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-        
-        if calculated_hash != hash_from_telegram:
-            raise HTTPException(status_code=403, detail="Проверка данных не пройдена.")
-        
-        user_info = json.loads(urllib.parse.unquote(parsed_data.get('user', '{}')))
-        user_id = user_info.get('id')
-        if user_id not in config.ADMIN_IDS:
-            raise HTTPException(status_code=403, detail="Доступ запрещен.")
-            
-        logger.info(f"Пользователь {user_id} успешно прошел авторизацию в веб-панели.")
-        return {"status": "ok", "user_id": user_id}
+        # Проксируем вызов в нашу новую универсальную функцию-валидатор
+        user_info = await get_validated_user(request.initData)
+        logger.info(f"Пользователь {user_info.get('id')} успешно прошел ПЕРВИЧНУЮ авторизацию в веб-панели.")
+        return {"status": "ok", "user_id": user_info.get('id')}
+    except HTTPException as e:
+        # Перехватываем ошибку из get_validated_user и возвращаем ее как есть
+        raise e
     except Exception as e:
-        logger.error(f"Ошибка валидации пользователя: {e}", exc_info=True)
+        logger.error(f"Неожиданная ошибка при первичной валидации: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Некорректные данные для авторизации.")
+
 
 # --- Эндпоинт для отдачи главной HTML страницы ---
 @app.get("/")

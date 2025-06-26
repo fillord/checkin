@@ -313,17 +313,45 @@
         };
         let debounceTimer;
 
+        // --- БЕЗОПАСНОСТЬ: Обертка для всех API запросов ---
+        async function apiFetch(url, options = {}) {
+            const defaultHeaders = {
+                'Content-Type': 'application/json',
+                // Добавляем данные для аутентификации в каждый запрос
+                'X-Telegram-Init-Data': tg.initData 
+            };
+            
+            const config = { ...options, headers: { ...defaultHeaders, ...options.headers } };
+
+            const response = await fetch(url, config);
+            if (!response.ok) {
+                try {
+                    const err = await response.json();
+                    throw new Error(err.detail || `Ошибка ${response.status}`);
+                } catch (e) {
+                    throw new Error(`Ошибка сети: ${response.statusText || response.status}`);
+                }
+            }
+            // Для POST/DELETE запросов, где тело ответа может быть пустым
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                return response.json();
+            }
+            return; 
+        }
+
         // --- ОБЩАЯ ЛОГИКА ---
         document.addEventListener('DOMContentLoaded', () => {
             tg.ready();
-            validateUser();
+            validateUserOnLoad();
         });
 
-        function validateUser() {
+        function validateUserOnLoad() {
             if (!tg.initData) {
                 document.body.innerHTML = '<main class="container"><h1>Доступ запрещен.</h1><p>Пожалуйста, откройте эту панель через вашего Telegram-бота.</p></main>';
                 return;
             }
+            // Используем старый эндпоинт для *первичной* проверки
             fetch('/api/validate_user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -359,11 +387,10 @@
             document.getElementById('leave-form').addEventListener('submit', handleLeaveFormSubmit);
             document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => e.target.closest('form').requestSubmit(e.target));
             
-
             document.getElementById('holiday-year-select').addEventListener('change', loadHolidays);
             document.getElementById('add-holiday-form').addEventListener('submit', handleAddHoliday);
             document.getElementById('holidays-list').addEventListener('click', handleDeleteHoliday);
-            document.getElementById('log-form').addEventListener('submit', handleLogFormSubmit); // <-- НОВЫЙ
+            document.getElementById('log-form').addEventListener('submit', handleLogFormSubmit);
             // Универсальный обработчик для закрытия модальных окон
             document.addEventListener('click', (e) => {
                 if(e.target.matches(".close")) {
@@ -372,7 +399,7 @@
                 }
             });
         }
-        // --- НОВЫЙ БЛОК ФУНКЦИЙ ДЛЯ УПРАВЛЕНИЯ ПРАЗДНИКАМИ ---
+        
         function setupHolidayManager() {
             const yearSelect = document.getElementById('holiday-year-select');
             const currentYear = new Date().getFullYear();
@@ -384,6 +411,7 @@
             loadHolidays();
         }
 
+        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent и .createElement
         function loadHolidays() {
             const year = document.getElementById('holiday-year-select').value;
             const list = document.getElementById('holidays-list');
@@ -392,23 +420,28 @@
             list.innerHTML = '';
             loading.style.display = 'block';
 
-            fetch(`/api/holidays/${year}`)
-                .then(response => {
-                    if (!response.ok) return [];
-                    return response.json();
-                })
+            apiFetch(`/api/holidays/${year}`)
                 .then(data => {
+                    if (!data || data.length === 0) return;
                     data.forEach(holiday => {
                         const li = document.createElement('li');
-                        const date = new Date(holiday.holiday_date).toLocaleDateString('ru-RU');
-                        li.innerHTML = `
-                            <span><strong>${date}</strong> - ${holiday.holiday_name}</span>
-                            <button class="secondary outline" data-date="${holiday.holiday_date}">Удалить</button>
-                        `;
+                        const span = document.createElement('span');
+                        const strong = document.createElement('strong');
+                        
+                        strong.textContent = new Date(holiday.holiday_date).toLocaleDateString('ru-RU');
+                        span.append(strong);
+                        span.append(document.createTextNode(` - ${holiday.holiday_name}`));
+
+                        const button = document.createElement('button');
+                        button.className = "secondary outline";
+                        button.dataset.date = holiday.holiday_date;
+                        button.textContent = "Удалить";
+                        
+                        li.append(span, button);
                         list.appendChild(li);
                     });
                 })
-                .catch(error => console.error("Ошибка загрузки праздников:", error))
+                .catch(error => console.error("Ошибка загрузки праздников:", error.message))
                 .finally(() => loading.style.display = 'none');
         }
 
@@ -421,13 +454,11 @@
                 return;
             }
             
-            fetch('/api/holidays/add', {
+            apiFetch('/api/holidays/add', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ holiday_date: date, holiday_name: name })
             })
-            .then(response => {
-                if (!response.ok) throw new Error('Ошибка при добавлении праздника');
+            .then(() => {
                 document.getElementById('add-holiday-form').reset();
                 loadHolidays();
             })
@@ -439,21 +470,14 @@
             const date = event.target.dataset.date;
             if (!confirm(`Вы уверены, что хотите удалить праздник ${date}?`)) return;
 
-            fetch('/api/holidays/delete', {
+            apiFetch('/api/holidays/delete', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ holiday_date: date })
             })
-            .then(response => {
-                if (!response.ok) throw new Error('Ошибка при удалении праздника');
-                loadHolidays();
-            })
+            .then(() => loadHolidays())
             .catch(error => alert(error.message));
         }
-        // --- КОНЕЦ НОВОГО БЛОКА ---
-
-
-        // --- ДОБАВЛЕНИЕ СОТРУДНИКА ---
+        
         function handleAddEmployeeSubmit(event) {
             event.preventDefault();
             const form = event.target;
@@ -502,20 +526,15 @@
             submitButton.setAttribute('aria-busy', 'true');
             submitButton.disabled = true;
 
-            fetch('/api/employees/add', {
+            apiFetch('/api/employees/add', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
-            })
-            .then(response => {
-                if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Неизвестная ошибка сервера') });
-                return response.json();
             })
             .then(result => {
                 alert(`Успешно: ${result.message}`);
                 document.getElementById('add-employee-modal').close();
                 form.reset();
-                loadEmployees(); // Обновляем список
+                loadEmployees();
             })
             .catch(error => {
                 errorDiv.textContent = `Ошибка: ${error.message}`;
@@ -527,7 +546,6 @@
             });
         }
 
-        // --- РЕДАКТИРОВАНИЕ СОТРУДНИКА ---
         function handleEditEmployeeSubmit(event) {
             event.preventDefault();
             const form = event.target;
@@ -570,19 +588,14 @@
             submitButton.setAttribute('aria-busy', 'true');
             submitButton.disabled = true;
 
-            fetch('/api/employees/update', {
+            apiFetch('/api/employees/update', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
-            })
-            .then(response => {
-                if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Ошибка сервера') });
-                return response.json();
             })
             .then(result => {
                 alert(`Успешно: ${result.message}`);
                 document.getElementById('edit-employee-modal').close();
-                loadEmployees(); // Обновляем список
+                loadEmployees();
             })
             .catch(error => {
                 errorDiv.textContent = `Ошибка: ${error.message}`;
@@ -593,8 +606,7 @@
                 submitButton.disabled = false;
             });
         }
-
-        // --- ПОИСК И СОРТИРОВКА ---
+        
         function handleSearchInput(event) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
@@ -626,8 +638,8 @@
                 activeHeader.classList.add(viewState.sortOrder === 'asc' ? 'sort-asc' : 'sort-desc');
             }
         }
-
-        // --- СПИСОК СОТРУДНИКОВ ---
+        
+        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent и .createElement
         function loadEmployees() {
             const loadingDiv = document.getElementById('loading-employees');
             const table = document.getElementById('employees-table');
@@ -644,27 +656,37 @@
             }
             const apiUrl = `/api/employees?${params.toString()}`;
 
-            fetch(apiUrl)
-                .then(response => response.json())
+            apiFetch(apiUrl)
                 .then(data => {
                     loadingDiv.style.display = 'none';
                     table.style.display = 'table';
                     tbody.innerHTML = '';
                     
                     data.forEach(employee => {
-                        const row = document.createElement('tr');
+                        const row = tbody.insertRow();
                         row.dataset.employeeId = employee.id;
-                        row.innerHTML = `
-                            <td>${employee.id}</td>
-                            <td>${employee.full_name}</td>
-                            <td>
-                                <button class="action-btn" data-action="view_log" data-id="${employee.id}" data-name="${employee.full_name}">История</button>
-                                <button class="action-btn" data-action="edit" data-id="${employee.id}">Изменить</button>
-                                <button class="action-btn" data-action="manage-leave" data-id="${employee.id}" data-name="${employee.full_name}">Отсутствие</button>
-                                <button class="action-btn delete-btn" data-action="deactivate" data-id="${employee.id}">Удалить</button>
-                            </td>
-                        `;
-                        tbody.appendChild(row);
+
+                        row.insertCell().textContent = employee.id;
+                        row.insertCell().textContent = employee.full_name;
+                        
+                        const actionsCell = row.insertCell();
+                        const createBtn = (text, action, id, name, isDelete = false) => {
+                            const btn = document.createElement('button');
+                            btn.textContent = text;
+                            btn.className = 'action-btn';
+                            if (isDelete) btn.classList.add('delete-btn');
+                            btn.dataset.action = action;
+                            btn.dataset.id = id;
+                            if (name) btn.dataset.name = name;
+                            return btn;
+                        };
+                        
+                        actionsCell.append(
+                            createBtn('История', 'view_log', employee.id, employee.full_name),
+                            createBtn('Изменить', 'edit', employee.id, employee.full_name),
+                            createBtn('Отсутствие', 'manage-leave', employee.id, employee.full_name),
+                            createBtn('Удалить', 'deactivate', employee.id, employee.full_name, true)
+                        );
                     });
                     updateSortIndicators();
                 })
@@ -679,7 +701,7 @@
 
             const action = targetButton.dataset.action;
             const employeeId = targetButton.dataset.id;
-            const employeeName = targetButton.closest('tr').cells[1].textContent;
+            const employeeName = targetButton.dataset.name;
 
             if (action === 'deactivate') {
                 if (confirm(`Вы уверены, что хотите деактивировать сотрудника ${employeeName}?`)) {
@@ -692,28 +714,26 @@
                 modal.showModal();
             } else if (action === 'edit') {
                 openEditModalFor(employeeId);
-            }
-            else if (action === 'view_log') { // <-- НОВЫЙ БЛОК
+            } else if (action === 'view_log') {
                 openLogModalFor(employeeId, employeeName);
+            }
         }
-        }
-        // --- НОВЫЕ ФУНКЦИИ ДЛЯ ЛОГА ---
+
         function openLogModalFor(employeeId, employeeName) {
             const modal = document.getElementById('log-modal');
             document.getElementById('log-modal-header').textContent = `История: ${employeeName}`;
             document.getElementById('log-employee-id').value = employeeId;
             
-            // Устанавливаем даты по умолчанию на текущий месяц
             const today = new Date();
             const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
             document.getElementById('log-start-date').valueAsDate = startOfMonth;
             document.getElementById('log-end-date').valueAsDate = today;
 
             modal.showModal();
-            // Сразу загружаем лог за период по умолчанию
             document.getElementById('log-form').requestSubmit();
         }
 
+        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent
         function handleLogFormSubmit(event) {
             event.preventDefault();
             const employeeId = document.getElementById('log-employee-id').value;
@@ -728,29 +748,25 @@
             errorDiv.style.display = 'none';
             tableBody.innerHTML = '';
 
-            fetch(`/api/employees/${employeeId}/log?start_date=${startDate}&end_date=${endDate}`)
-            .then(response => {
-                if (!response.ok) return response.json().then(err => { throw new Error(err.detail) });
-                return response.json();
-            })
+            apiFetch(`/api/employees/${employeeId}/log?start_date=${startDate}&end_date=${endDate}`)
             .then(data => {
                 if (data.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="4">Нет событий за выбранный период.</td></tr>';
+                    const row = tableBody.insertRow();
+                    const cell = row.insertCell();
+                    cell.colSpan = 4;
+                    cell.textContent = 'Нет событий за выбранный период.';
                     return;
                 }
                 data.forEach(log => {
-                    const row = document.createElement('tr');
+                    const row = tableBody.insertRow();
+                    row.insertCell().textContent = log.timestamp;
+                    row.insertCell().textContent = log.check_in_type;
+                    row.insertCell().textContent = log.status;
+                    
                     let details = '';
                     if (log.distance_meters !== null) details += `Расстояние: ${log.distance_meters}м. `;
                     if (log.face_similarity !== null) details += `Схожесть: ${log.face_similarity.toFixed(1)}%`;
-                    
-                    row.innerHTML = `
-                        <td>${log.timestamp}</td>
-                        <td>${log.check_in_type}</td>
-                        <td>${log.status}</td>
-                        <td>${details || '-'}</td>
-                    `;
-                    tableBody.appendChild(row);
+                    row.insertCell().textContent = details || '-';
                 });
             })
             .catch(error => {
@@ -761,6 +777,7 @@
                 loading.style.display = 'none';
             });
         }
+
         function openEditModalFor(employeeId) {
             const modal = document.getElementById('edit-employee-modal');
             const form = document.getElementById('edit-employee-form');
@@ -772,11 +789,7 @@
             errorDiv.style.display = 'none';
             modal.showModal();
 
-            fetch(`/api/employees/${employeeId}`)
-                .then(response => {
-                    if (!response.ok) throw new Error('Не удалось загрузить данные сотрудника');
-                    return response.json();
-                })
+            apiFetch(`/api/employees/${employeeId}`)
                 .then(data => {
                     document.getElementById('edit-employee-id').value = data.telegram_id;
                     document.getElementById('edit-employee-name').value = data.full_name;
@@ -800,14 +813,9 @@
         function deactivateEmployee(id, button) {
             button.setAttribute('aria-busy', 'true');
             button.disabled = true;
-            fetch('/api/employees/deactivate', {
+            apiFetch('/api/employees/deactivate', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: parseInt(id) })
-            })
-            .then(response => {
-                if (!response.ok) throw new Error('Ошибка сервера');
-                return response.json();
             })
             .then(() => loadEmployees())
             .catch(error => {
@@ -817,7 +825,6 @@
             });
         }
 
-        // --- УПРАВЛЕНИЕ ОТСУТСТВИЯМИ ---
         function handleLeaveFormSubmit(event) {
             event.preventDefault();
             const actionButton = event.submitter;
@@ -842,14 +849,9 @@
             actionButton.disabled = true;
             errorDiv.style.display = 'none';
 
-            fetch(apiUrl, {
+            apiFetch(apiUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody)
-            })
-            .then(response => {
-                if (!response.ok) return response.json().then(err => { throw new Error(err.detail || 'Неизвестная ошибка сервера') });
-                return response.json();
             })
             .then(result => {
                 alert(`Успешно: ${result.message}`);
@@ -866,7 +868,6 @@
             });
         }
         
-        // --- ОТЧЕТЫ ---
         function setupDateSelector() {
             const monthSelect = document.getElementById('month-select');
             const yearSelect = document.getElementById('year-select');
@@ -898,13 +899,14 @@
             errorDiv.style.display = 'none';
             table.innerHTML = '';
 
-            fetch(`/api/reports/monthly/${year}/${month}`)
-                .then(response => {
-                    if (!response.ok) return response.json().then(err => { throw new Error(err.detail) });
-                    return response.json();
-                })
+            apiFetch(`/api/reports/monthly/${year}/${month}`)
                 .then(result => {
                     loadingDiv.style.display = 'none';
+                    if (result.data.length === 0) {
+                        errorDiv.textContent = 'Нет данных за выбранный период.';
+                        errorDiv.style.display = 'block';
+                        return;
+                    }
                     renderReportTable(result.data);
                 })
                 .catch(error => {
@@ -932,9 +934,8 @@
                 rowData.forEach((cellData, index) => {
                     const cell = document.createElement('td');
                     cell.textContent = cellData;
-                    if (index > 0) { // Применяем классы только к ячейкам с датами
+                    if (index > 0) { 
                         const status = cellData.toLowerCase();
-                        // Устанавливаем приоритет для цветов: проблемы > опоздания > отгулы > успех > спец. статусы
                         if (status.includes('прогул') || status.includes('пропустил') || status.includes('не завершил')) {
                             cell.className = 'status-absent';
                         } else if (status.includes('опоздал')) {

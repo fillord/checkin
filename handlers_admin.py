@@ -7,7 +7,7 @@ import config
 
 from datetime import time, datetime, date, timedelta
 from io import StringIO, BytesIO
-
+from decorators import user_level_cooldown
 from telegram import Update, ReplyKeyboardMarkup, InputFile, MessageOriginUser, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -48,18 +48,21 @@ async def admin_reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("Меню отчетов:", reply_markup=reports_menu_keyboard())
     return ADMIN_REPORTS_MENU
 
+@user_level_cooldown(30)
 async def admin_get_today_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_today_report из bot.py)
     today = datetime.now(database.LOCAL_TIMEZONE).date()
     await send_report_for_period(today, today, context, "Отчет за сегодня", update.effective_chat.id)
     return ADMIN_REPORTS_MENU
 
+@user_level_cooldown(30)
 async def admin_get_yesterday_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_yesterday_report из bot.py)
     yesterday = datetime.now(database.LOCAL_TIMEZONE).date() - timedelta(days=1)
     await send_report_for_period(yesterday, yesterday, context, "Отчет за вчера", update.effective_chat.id)
     return ADMIN_REPORTS_MENU
 
+@user_level_cooldown(30)
 async def admin_get_weekly_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_get_weekly_report из bot.py)
     today = datetime.now(database.LOCAL_TIMEZONE).date()
@@ -67,6 +70,7 @@ async def admin_get_weekly_report(update: Update, context: ContextTypes.DEFAULT_
     await send_report_for_period(start_of_week, today, context, "Отчет за текущую неделю", update.effective_chat.id)
     return ADMIN_REPORTS_MENU
 
+@user_level_cooldown(30)
 async def admin_custom_report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_custom_report_start из bot.py)
     await update.message.reply_text(
@@ -76,6 +80,7 @@ async def admin_custom_report_start(update: Update, context: ContextTypes.DEFAUL
     )
     return REPORT_GET_DATES
 
+@user_level_cooldown(30)
 async def admin_custom_report_get_dates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_custom_report_get_dates из bot.py)
     try:
@@ -95,6 +100,7 @@ async def admin_custom_report_get_dates(update: Update, context: ContextTypes.DE
         await update.message.reply_text("Неверный формат. Пожалуйста, введите даты в формате `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ` и попробуйте снова.")
         return REPORT_GET_DATES
 
+@user_level_cooldown(30)
 async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_export_csv из bot.py)
     await update.message.reply_text("Подготовка данных для экспорта...")
@@ -107,6 +113,7 @@ async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_document(document=InputFile(csv_bytes, filename=f"checkin_export_{date.today().isoformat()}.csv"), caption="Экспорт всех записей о чек-инах.")
     return ADMIN_REPORTS_MENU
 
+@user_level_cooldown(30)
 async def admin_monthly_csv_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # ... (скопируйте сюда содержимое функции admin_monthly_csv_start из bot.py)
     await update.message.reply_text(
@@ -209,7 +216,7 @@ async def add_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def add_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['new_employee_name'] = update.message.text
     
-    # --> ИЗМЕНЕНИЕ: Добавлено экранирование всех точек
+    # ИЗМЕНЕНИЕ: Добавлено экранирование всех потенциально опасных символов
     text_to_send = (
         "ФИО принято\\.\n"
         "С какой даты будет действовать график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
@@ -241,8 +248,10 @@ async def modify_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data['target_employee_id'] = user_id
     context.user_data['target_employee_name'] = employee['full_name']
     
+    # ИЗМЕНЕНИЕ: Добавлено экранирование имени и других символов
+    escaped_name = re.sub(r'([_*\[\]()~`>#\+\-=|{}.!])', r'\\\1', employee['full_name'])
     text_to_send = (
-        f"Изменение графика для: {employee['full_name']}\\.\n"
+        f"Изменение графика для: {escaped_name}\\.\n"
         f"С какой даты будет действовать новый график? Введите дату в формате `ДД\\.ММ\\.ГГГГ` или напишите `сегодня`\\."
     )
     
@@ -329,7 +338,11 @@ async def handle_add_employees_file(update: Update, context: ContextTypes.DEFAUL
     if not document or not document.file_name.endswith('.csv'):
         await update.message.reply_text("Пожалуйста, отправьте файл в формате .csv")
         return AWAITING_ADD_EMPLOYEES_FILE
-
+    if document.file_size > (config.MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024):
+        await update.message.reply_text(
+            f"❌ Ошибка: Размер файла не должен превышать {config.MAX_UPLOAD_FILE_SIZE_MB} МБ."
+        )
+        return ConversationHandler.END
     await update.message.reply_text("Файл получен. Начинаю обработку...")
 
     file = await document.get_file()
@@ -481,7 +494,11 @@ async def handle_schedule_file(update: Update, context: ContextTypes.DEFAULT_TYP
     if not document or not document.file_name.endswith('.csv'):
         await update.message.reply_text("Пожалуйста, отправьте файл в формате .csv")
         return AWAITING_SCHEDULE_FILE
-
+    if document.file_size > (config.MAX_UPLOAD_FILE_SIZE_MB * 1024 * 1024):
+        await update.message.reply_text(
+            f"❌ Ошибка: Размер файла не должен превышать {config.MAX_UPLOAD_FILE_SIZE_MB} МБ."
+        )
+        return ConversationHandler.END
     await update.message.reply_text("Файл получен. Начинаю обработку, это может занять некоторое время...")
 
     file = await document.get_file()
@@ -781,13 +798,13 @@ async def admin_cancel_leave_get_id(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text("Этот пользователь не найден в базе данных.")
         return config.CANCEL_LEAVE_GET_ID
     
-    # ИСПРАВЛЕНИЕ: Используем 'full_name'
     context.user_data['cancel_leave_employee_id'] = user_id
     context.user_data['cancel_leave_employee_name'] = employee['full_name']
     
-    # ИСПРАВЛЕНИЕ: Используем 'full_name' и экранируем точки
+    # ИЗМЕНЕНИЕ: Добавлено экранирование имени и других символов
+    escaped_name = re.sub(r'([_*\[\]()~`>#\+\-=|{}.!])', r'\\\1', employee['full_name'])
     text_to_send = (
-        f"Выбран сотрудник: {employee['full_name']}\\.\n"
+        f"Выбран сотрудник: {escaped_name}\\.\n"
         f"Введите период для отмены отсутствия в формате `ДД\\.ММ\\.ГГГГ-ДД\\.ММ\\.ГГГГ`\\."
     )
 
