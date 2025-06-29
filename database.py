@@ -18,6 +18,8 @@ def _build_composite_status(status_list: list, is_work_day: bool, is_past_date: 
         return 'Отпуск'
     if 'SICK_LEAVE' in status_list:
         return 'Больничный'
+    if 'ABSENT' in status_list:
+        return "Прогул"
     arrival_status = ""
     if 'LATE' in status_list:
         arrival_status = "Опоздал"
@@ -737,3 +739,38 @@ async def get_dashboard_stats(for_date: date) -> dict:
         await conn.close()
     
     return stats
+
+async def mark_as_absent(telegram_id: int, for_date: date):
+    """Marks an employee as absent by inserting a 'SYSTEM' check-in with 'ABSENT' status."""
+    timestamp_utc = datetime.now(ZoneInfo("UTC"))
+    conn = await get_db_connection()
+    try:
+        # Убедимся, что для этого пользователя нет других записей (приход, отпуск и т.д.) за этот день
+        start_of_day_utc = datetime.combine(for_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
+        end_of_day_utc = datetime.combine(for_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
+
+        existing_record = await conn.fetchval("""
+            SELECT 1 FROM check_ins
+            WHERE employee_telegram_id = $1
+            AND timestamp BETWEEN $2 AND $3
+            AND status IN ('SUCCESS', 'LATE', 'ABSENT', 'APPROVED_LEAVE', 'VACATION', 'SICK_LEAVE')
+            LIMIT 1
+        """, telegram_id, start_of_day_utc, end_of_day_utc)
+        
+        existing_leave = await conn.fetchval("""
+            SELECT 1 FROM leaves
+            WHERE employee_telegram_id = $1 AND start_date <= $2 AND end_date >= $2
+            LIMIT 1
+        """, telegram_id, for_date)
+
+        if not existing_record and not existing_leave:
+            await conn.execute(
+                """
+                INSERT INTO check_ins (timestamp, employee_telegram_id, check_in_type, status)
+                VALUES ($1, $2, 'SYSTEM', 'ABSENT')
+                """,
+                timestamp_utc, telegram_id,
+            )
+            logger.info(f"Сотрудник {telegram_id} помечен как 'прогул' за {for_date.isoformat()}")
+    finally:
+        await conn.close()

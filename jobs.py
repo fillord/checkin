@@ -209,4 +209,45 @@ async def apply_incomplete_day_penalty(context: ContextTypes.DEFAULT_TYPE):
                 await database.override_as_absent(emp_id, yesterday)
         except Exception as e:
             logger.error(f"Ошибка в цикле применения штрафов для {emp_id}: {e}", exc_info=True)
-            
+
+async def check_for_absentees(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Проверяет сотрудников, которые не отметили приход в течение 3 часов
+    от начала смены, и отмечает их как прогульщиков.
+    """
+    now = datetime.now(LOCAL_TIMEZONE)
+    today = now.date()
+
+    if await is_holiday(today):
+        logger.info(f"Сегодня ({today.isoformat()}) праздник. Проверка на прогулы отключена.")
+        return
+
+    employees = await database.get_all_active_employees_with_schedules(today)
+    if not employees:
+        return
+
+    logger.info(f"---[ЗАДАЧА]--- Запуск проверки на автоматические прогулы ---")
+    for emp_id, name, start_time_str in employees:
+        try:
+            if start_time_str is None:
+                continue
+
+            start_time = start_time_str if isinstance(start_time_str, time) else time.fromisoformat(start_time_str)
+            shift_start_datetime = datetime.combine(today, start_time, tzinfo=LOCAL_TIMEZONE)
+
+            # Проверяем, прошло ли 3 часа с начала смены
+            if now > shift_start_datetime + timedelta(hours=3):
+                # Проверяем, не отметился ли сотрудник уже
+                if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
+                    # Отмечаем как прогул
+                    await database.mark_as_absent(emp_id, today)
+                    logger.info(f"Сотрудник {name} (ID: {emp_id}) автоматически отмечен как прогульщик.")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=emp_id,
+                            text="Вы были автоматически отмечены как 'прогул', так как не отметили приход в течение 3 часов от начала вашего рабочего дня."
+                        )
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление о прогуле сотруднику {name}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в цикле проверки прогулов для {name} (ID: {emp_id}): {e}", exc_info=True)

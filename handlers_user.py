@@ -103,17 +103,32 @@ async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Приход' для своевременных и опоздавших сотрудников."""
     user = update.effective_user
+
     if await database.has_checked_in_today(user.id, "ARRIVAL"):
         await update.message.reply_text("Вы уже отмечали приход сегодня.", reply_markup=main_menu_keyboard())
         return CHOOSE_ACTION
+
+    schedule = await database.get_employee_today_schedule(user.id)
+    if not schedule or not schedule.get('start_time'):
+         await update.message.reply_text("Ваш график на сегодня не настроен. Невозможно отметиться.", reply_markup=main_menu_keyboard())
+         return CHOOSE_ACTION
+    now_local = datetime.now(database.LOCAL_TIMEZONE)
+    shift_start_datetime = datetime.combine(now_local.date(), schedule['start_time'], tzinfo=database.LOCAL_TIMEZONE)
+
+    if now_local > shift_start_datetime + timedelta(hours=3):
+        await update.message.reply_text(
+            "Вы не можете отметиться, так как прошло более 3 часов с начала вашего рабочего дня. "
+            "Вы были отмечены как 'прогул'. Пожалуйста, свяжитесь с администратором.",
+            reply_markup=main_menu_keyboard()
+        )
+        await database.mark_as_absent(user.id, now_local.date())
+        return CHOOSE_ACTION
+
     is_unhandled_late = user.id in context.bot_data.get('unhandled_late_users', set())
     if is_unhandled_late:
         logger.info(f"Пользователь {user.id} нажал 'Приход' будучи в списке опоздавших. Начинаем late check-in.")
         context.user_data["is_late"] = True
     else:
-        schedule = await database.get_employee_today_schedule(user.id)
-        if not schedule:
-            return CHOOSE_ACTION
         grace_period_end = (datetime.combine(date.today(), schedule['start_time']) + timedelta(minutes=5)).time()
         if datetime.now(database.LOCAL_TIMEZONE).time() > grace_period_end:
             await update.message.reply_text(f"Вы опоздали. Ваше время для самостоятельного чекина истекло в {grace_period_end.strftime('%H:%M')}.", reply_markup=main_menu_keyboard())
@@ -122,7 +137,7 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     action = random.choice(LIVENESS_ACTIONS)
     context.user_data["checkin_type"] = "ARRIVAL"
     await update.message.reply_text(
-        f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.", 
+        f"Для подтверждения прихода, пожалуйста, {action} и сделайте селфи.",
         reply_markup=cancel_action_keyboard()
     )
     return AWAITING_PHOTO

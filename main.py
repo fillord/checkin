@@ -213,6 +213,7 @@ async def main() -> None:
         scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application])
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=14, minute=35, args=[application, 'midday'])
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=20, minute=00, args=[application, 'evening'])
+        scheduler.add_job(jobs.check_for_absentees, 'interval', minutes=15, args=[application])
         async with application:
             await database.init_db()
             await application.initialize()
@@ -224,7 +225,7 @@ async def main() -> None:
     finally:
         logger.info("Закрытие пула процессов...")
         shutdown_executor()
-        
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
