@@ -6,7 +6,6 @@
     <title>Админ-панель</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
-        /* Общие стили для улучшения читаемости */
         body {
             font-size: 16px;
         }
@@ -14,21 +13,12 @@
             padding-bottom: 2rem;
         }
         #report-container { overflow-x: auto; }
-        
-        /* Зеленый для "Вовремя" */
         .status-ontime { background-color: #2a9d8f}
-        /* Оранжевый для "Опоздал" */
         .status-late { background-color: #e76f51}
-        /* Красный для пропусков и проблем */
         .status-absent { background-color: #e63946}
-        /* Синий для отпусков/больничных */
         .status-leave { background-color: #5252b9}
-        /* Фиолетовый для праздников */
         .status-holiday { background-color: #8349a9}
-        /* Серый для выходных */
         .status-dayoff { background-color: #38514e }
-        
-        /* Стили для кнопок действий */
         .action-btn { 
             --pico-font-size: 0.85em; 
             --pico-padding: 0.3em 0.6em;
@@ -43,14 +33,10 @@
             background-color: var(--pico-color-red-600); 
             border-color: var(--pico-color-red-650); 
         }
-
-        /* Стили для модального окна */
         .modal-body { 
             max-height: 80vh; 
             overflow-y: auto; 
         }
-
-        /* Стили для сортировки */
         th[data-sort] {
             cursor: pointer;
             user-select: none;
@@ -66,17 +52,13 @@
             content: ' ▼';
             font-size: 0.8em;
         }
-        /* --- НОВЫЕ СТИЛИ ДЛЯ ЗАКРЕПЛЕННОГО СТОЛБЦА --- */
         #report-table th:first-child,
         #report-table td:first-child {
-            position: -webkit-sticky; /* Для совместимости с Safari */
+            position: -webkit-sticky;
             position: sticky;
             left: 0;
-            /* Важно: фон, чтобы контент под ним не просвечивал при прокрутке */
             background-color: var(--pico-card-background-color);
         }
-
-        /* Делаем заголовок таблицы выше, чтобы он был над ячейками */
         #report-table thead th {
             z-index: 3;
         }
@@ -84,7 +66,6 @@
         #report-table td:first-child {
             z-index: 1;
         }
-        /* --- КОНЕЦ НОВЫХ СТИЛЕЙ --- */
         #holidays-list li { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
         #holidays-list span { flex-grow: 1; }
         #holidays-list button { margin-left: 1rem; }
@@ -304,20 +285,15 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
         const tg = window.Telegram.WebApp;
-
-        // Глобальное состояние для поиска и сортировки
         let viewState = {
             searchQuery: '',
             sortBy: 'full_name',
             sortOrder: 'asc'
         };
         let debounceTimer;
-
-        // --- БЕЗОПАСНОСТЬ: Обертка для всех API запросов ---
         async function apiFetch(url, options = {}) {
             const defaultHeaders = {
                 'Content-Type': 'application/json',
-                // Добавляем данные для аутентификации в каждый запрос
                 'X-Telegram-Init-Data': tg.initData 
             };
             
@@ -332,15 +308,12 @@
                     throw new Error(`Ошибка сети: ${response.statusText || response.status}`);
                 }
             }
-            // Для POST/DELETE запросов, где тело ответа может быть пустым
             const contentType = response.headers.get("content-type");
             if (contentType && contentType.indexOf("application/json") !== -1) {
                 return response.json();
             }
             return; 
         }
-
-        // --- ОБЩАЯ ЛОГИКА ---
         document.addEventListener('DOMContentLoaded', () => {
             tg.ready();
             validateUserOnLoad();
@@ -351,7 +324,6 @@
                 document.body.innerHTML = '<main class="container"><h1>Доступ запрещен.</h1><p>Пожалуйста, откройте эту панель через вашего Telegram-бота.</p></main>';
                 return;
             }
-            // Используем старый эндпоинт для *первичной* проверки
             fetch('/api/validate_user', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -375,8 +347,6 @@
             loadEmployees();
             setupDateSelector();
             setupHolidayManager();
-
-            // --- РЕГИСТРАЦИЯ ВСЕХ ОБРАБОТЧИКОВ ---
             document.getElementById('add-employee-btn').addEventListener('click', () => document.getElementById('add-employee-modal').showModal());
             document.getElementById('add-employee-form').addEventListener('submit', handleAddEmployeeSubmit);
             document.getElementById('edit-employee-form').addEventListener('submit', handleEditEmployeeSubmit);
@@ -391,7 +361,6 @@
             document.getElementById('add-holiday-form').addEventListener('submit', handleAddHoliday);
             document.getElementById('holidays-list').addEventListener('click', handleDeleteHoliday);
             document.getElementById('log-form').addEventListener('submit', handleLogFormSubmit);
-            // Универсальный обработчик для закрытия модальных окон
             document.addEventListener('click', (e) => {
                 if(e.target.matches(".close")) {
                     e.preventDefault();
@@ -410,8 +379,6 @@
             }
             loadHolidays();
         }
-
-        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent и .createElement
         function loadHolidays() {
             const year = document.getElementById('holiday-year-select').value;
             const list = document.getElementById('holidays-list');
@@ -638,8 +605,6 @@
                 activeHeader.classList.add(viewState.sortOrder === 'asc' ? 'sort-asc' : 'sort-desc');
             }
         }
-        
-        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent и .createElement
         function loadEmployees() {
             const loadingDiv = document.getElementById('loading-employees');
             const table = document.getElementById('employees-table');
@@ -732,8 +697,6 @@
             modal.showModal();
             document.getElementById('log-form').requestSubmit();
         }
-
-        // БЕЗОПАСНОСТЬ: Переписано с использованием .textContent
         function handleLogFormSubmit(event) {
             event.preventDefault();
             const employeeId = document.getElementById('log-employee-id').value;

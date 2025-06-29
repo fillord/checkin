@@ -1,4 +1,3 @@
-# keyboards.py
 from telegram import ReplyKeyboardMarkup
 from config import (
     BUTTON_ARRIVAL, BUTTON_DEPARTURE, BUTTON_ASK_LEAVE, BUTTON_ADMIN_ADD, BUTTON_ADMIN_MODIFY,
@@ -22,7 +21,6 @@ def main_menu_keyboard():
     )
 
 def admin_menu_keyboard():
-    # Немного перекомпонуем для лучшего вида
     return ReplyKeyboardMarkup([
         [BUTTON_ADMIN_ADD, BUTTON_ADMIN_MODIFY],
         [BUTTON_ADMIN_DELETE, BUTTON_ADMIN_REPORTS],
@@ -45,7 +43,6 @@ def leave_type_keyboard():
     ], resize_keyboard=True)
 
 def holidays_menu_keyboard():
-    """Клавиатура для меню управления праздниками."""
     return ReplyKeyboardMarkup([
         ["➕ Добавить праздник"],
         ["➖ Удалить праздник"],
@@ -53,7 +50,6 @@ def holidays_menu_keyboard():
     ], resize_keyboard=True)
 
 def cancel_action_keyboard():
-    """Клавиатура с единственной кнопкой 'Отмена'."""
     return ReplyKeyboardMarkup(
         [[BUTTON_CANCEL_ACTION]],
         resize_keyboard=True

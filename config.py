@@ -1,4 +1,3 @@
-# config.py
 import os
 from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
@@ -13,7 +12,7 @@ ADMIN_IDS = [1027958463]
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Almaty")
 WORK_LOCATION_COORDS = [
-    (43.26102054257909, 76.89104192879864), # Локация 1 (старый адрес)
+    (43.26102054257909, 76.89104192879864),
     (43.25840027467819, 76.88278342562465)
 ]
 ALLOWED_RADIUS_METERS = 200
@@ -33,7 +32,6 @@ if not DB_HOST:
     raise ValueError("Не найден DB_HOST в файле .env.")
 PERSISTENCE_FILE = "bot_persistence.pickle"
 
-# --- Состояния для диалогов ---
 CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE = range(4)
 (
     ADMIN_MENU, ADMIN_REPORTS_MENU,
@@ -45,7 +43,6 @@ CHOOSE_ACTION, AWAITING_PHOTO, AWAITING_LOCATION, REGISTER_FACE = range(4)
 ) = range(4, 19)
 MONTHLY_CSV_GET_MONTH = 19
 AWAITING_LEAVE_REASON = 20
-
 (
     LEAVE_GET_ID,
     LEAVE_GET_TYPE,
@@ -56,20 +53,16 @@ AWAITING_LEAVE_REASON = 20
     CANCEL_LEAVE_GET_PERIOD
 ) = range(24, 26) 
 SCHEDULE_GET_EFFECTIVE_DATE = 26
-AWAITING_NEW_FACE_PHOTO = 27 # <-- ИЗМЕНЕНИЕ: Сдвигаем на 1, чтобы избежать конфликта
-
-# --- НОВЫЕ СОСТОЯНИЯ ДЛЯ ПРАЗДНИКОВ ---
+AWAITING_NEW_FACE_PHOTO = 27
 (
     HOLIDAY_MENU,
     HOLIDAY_GET_ADD_DATE,
     HOLIDAY_GET_ADD_NAME,
     HOLIDAY_GET_DELETE_DATE
 ) = range(28, 32)
-# --- КОНЕЦ НОВЫХ СОСТОЯНИЙ ---
 AWAITING_SCHEDULE_FILE = 32
 AWAITING_ADD_EMPLOYEES_FILE = 33
 
-# --- Тексты кнопок ---
 BUTTON_ARRIVAL = "✅ Приход"
 BUTTON_DEPARTURE = "🏁 Уход"
 BUTTON_ADMIN_ADD = "➕ Добавить сотрудника"
@@ -92,11 +85,10 @@ BUTTON_LEAVE_TYPE_SICK = "Больничный"
 BUTTON_CANCEL_LEAVE = "🚫 Отменить отсутствие" 
 BUTTON_UPDATE_PHOTO = "📸 Обновить фото" 
 BUTTON_MANAGE_HOLIDAYS = "🎉 Управление праздниками"
-BUTTON_MY_SCHEDULE = "📅 Мой график" # <-- НОВАЯ КНОПКА
+BUTTON_MY_SCHEDULE = "📅 Мой график" 
 BUTTON_CANCEL_ACTION = "❌ Отмена"
 BUTTON_MY_STATS = "📊 Моя статистика" 
 
-# --- Другие константы ---
 LIVENESS_ACTIONS = ["улыбнитесь в камеру", "покажите на камеру большой палец 👍", "покажите на камеру знак 'мир' двумя пальцами ✌️"]
 DAYS_OF_WEEK = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 

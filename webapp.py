@@ -1,4 +1,3 @@
-# webapp.py
 import logging
 import urllib.parse
 import hmac
@@ -7,20 +6,16 @@ import json
 import config
 import database
 import re
-
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 from typing import Dict, List, Optional, Annotated
-
 from datetime import date, time
 from database import add_leave_period, cancel_leave_period
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-# --- Pydantic модели (без изменений) ---
 class Employee(BaseModel):
     id: int
     full_name: str
@@ -64,47 +59,32 @@ class Holiday(BaseModel):
 class HolidayDeleteRequest(BaseModel):
     holiday_date: date
 
-# --- НОВАЯ ФУНКЦИЯ: ЗАЩИТНАЯ ЗАВИСИМОСТЬ ---
 async def get_validated_user(x_telegram_init_data: Annotated[str, Header()]) -> dict:
-    """
-    Проверяет подлинность данных Telegram из заголовка запроса.
-    Возвращает словарь с данными пользователя в случае успеха.
-    Вызывает HTTPException в случае ошибки, прерывая выполнение запроса.
-    """
     try:
         init_data = x_telegram_init_data
         parsed_data = dict(urllib.parse.parse_qsl(init_data))
         hash_from_telegram = parsed_data.pop('hash', '')
         if not hash_from_telegram:
             raise ValueError("Хэш отсутствует в initData")
-
         data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
         secret_key = hmac.new("WebAppData".encode(), config.BOT_TOKEN.encode(), hashlib.sha256).digest()
         calculated_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-
         if not hmac.compare_digest(calculated_hash, hash_from_telegram):
             logger.warning(f"Проверка данных не пройдена. Хэш не совпал.")
             raise HTTPException(status_code=403, detail="Проверка данных не пройдена.")
-        
         user_info = json.loads(urllib.parse.unquote(parsed_data.get('user', '{}')))
         user_id = user_info.get('id')
-        
         if user_id not in config.ADMIN_IDS:
             raise HTTPException(status_code=403, detail="Доступ запрещен.")
-            
         return user_info
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         logger.error(f"Критическая ошибка валидации пользователя: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Некорректные данные для авторизации.")
 
-# --- Создание FastAPI приложения ---
 app = FastAPI(title="Check-in Bot Admin Panel")
-
-# --- API Эндпоинты (точки доступа к данным) ---
 
 @app.get("/api/holidays/{year}", response_model=List[Holiday])
 async def get_holidays(year: int, user: Annotated[dict, Depends(get_validated_user)]):
-    """Возвращает список праздников за указанный год."""
     try:
         return await database.get_holidays_for_year(year)
     except Exception as e:
@@ -113,7 +93,6 @@ async def get_holidays(year: int, user: Annotated[dict, Depends(get_validated_us
 
 @app.post("/api/holidays/add")
 async def add_new_holiday(request: Holiday, user: Annotated[dict, Depends(get_validated_user)]):
-    """Добавляет новый праздничный день."""
     try:
         await database.add_holiday(request.holiday_date, request.holiday_name)
         return {"status": "success", "message": "Праздник успешно добавлен."}
@@ -123,7 +102,6 @@ async def add_new_holiday(request: Holiday, user: Annotated[dict, Depends(get_va
 
 @app.post("/api/holidays/delete")
 async def delete_existing_holiday(request: HolidayDeleteRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Удаляет праздничный день."""
     try:
         await database.delete_holiday(request.holiday_date)
         return {"status": "success", "message": "Праздник успешно удален."}
@@ -133,17 +111,14 @@ async def delete_existing_holiday(request: HolidayDeleteRequest, user: Annotated
 
 @app.get("/api/employees/{employee_id}/log", response_model=List[dict])
 async def get_log_for_employee(employee_id: int, start_date: date, end_date: date, user: Annotated[dict, Depends(get_validated_user)]):
-    """Возвращает детализированный лог событий для сотрудника."""
     try:
         if start_date > end_date:
             raise HTTPException(status_code=400, detail="Начальная дата не может быть позже конечной.")
-        
         log_data = await database.get_employee_log(employee_id, start_date, end_date)
         return log_data
     except Exception as e:
         logger.error(f"Ошибка при получении лога для сотрудника {employee_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
-
 
 @app.get("/api/employees", response_model=List[Employee])
 async def get_employees(
@@ -152,9 +127,6 @@ async def get_employees(
     sort_by: Optional[str] = 'full_name', 
     sort_order: Optional[str] = 'asc'
 ):
-    """
-    Возвращает список всех активных сотрудников, используя database.py с поиском и сортировкой.
-    """
     try:
         db_employees = await database.get_all_active_employees(
             search_query=q, 
@@ -168,7 +140,6 @@ async def get_employees(
 
 @app.get("/api/employees/{employee_id}")
 async def get_employee_details(employee_id: int, user: Annotated[dict, Depends(get_validated_user)]):
-    """Возвращает детальную информацию о сотруднике, включая его последний график."""
     try:
         employee_data = await database.get_employee_with_schedule(employee_id)
         if not employee_data:
@@ -180,7 +151,6 @@ async def get_employee_details(employee_id: int, user: Annotated[dict, Depends(g
 
 @app.post("/api/employees/update")
 async def update_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Обновляет данные сотрудника и его график (создает новую версию)."""
     try:
         schedule_for_db = {}
         for day_index_str, times in request.schedule.items():
@@ -192,7 +162,6 @@ async def update_employee(request: EmployeeUpdateRequest, user: Annotated[dict, 
                 }
             else:
                 schedule_for_db[day_index] = {}
-
         await database.add_or_update_employee(
             telegram_id=request.telegram_id,
             full_name=request.full_name,
@@ -207,7 +176,6 @@ async def update_employee(request: EmployeeUpdateRequest, user: Annotated[dict, 
 
 @app.post("/api/employees/add")
 async def add_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Добавляет нового сотрудника и его график."""
     try:
         schedule_for_db = {}
         for day_index_str, times in request.schedule.items():
@@ -218,8 +186,7 @@ async def add_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Dep
                     "end": time.fromisoformat(times.end)
                 }
             else:
-                schedule_for_db[day_index] = {} # Выходной
-
+                schedule_for_db[day_index] = {}
         await database.add_or_update_employee(
             telegram_id=request.telegram_id,
             full_name=request.full_name,
@@ -234,7 +201,6 @@ async def add_employee(request: EmployeeUpdateRequest, user: Annotated[dict, Dep
 
 @app.post("/api/employees/deactivate")
 async def deactivate_employee(request: DeactivateRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Деактивирует сотрудника по его ID, используя database.py."""
     try:
         await database.set_employee_active_status(request.id, is_active=False)
         logger.info(f"Сотрудник с ID {request.id} был деактивирован через веб-интерфейс.")
@@ -245,7 +211,6 @@ async def deactivate_employee(request: DeactivateRequest, user: Annotated[dict, 
 
 @app.post("/api/leaves/add")
 async def add_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Назначает сотруднику период отсутствия."""
     try:
         await database.add_leave_period(
             telegram_id=request.employee_id,
@@ -260,7 +225,6 @@ async def add_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_val
 
 @app.post("/api/leaves/cancel")
 async def cancel_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_validated_user)]):
-    """Отменяет период отсутствия для сотрудника."""
     try:
         rows_deleted = await database.cancel_leave_period(
             telegram_id=request.employee_id,
@@ -274,7 +238,6 @@ async def cancel_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_
 
 @app.get("/api/reports/monthly/{year}/{month}")
 async def get_monthly_report(year: int, month: int, user: Annotated[dict, Depends(get_validated_user)]):
-    """Возвращает данные для сводного отчета за месяц, используя database.py."""
     try:
         report_data = await database.get_monthly_summary_data(year, month)
         if not report_data or len(report_data) <= 1:
@@ -287,24 +250,16 @@ async def get_monthly_report(year: int, month: int, user: Annotated[dict, Depend
 
 @app.post("/api/validate_user")
 async def validate_user_initial(request: AuthRequest):
-    """
-    Первичная проверка пользователя при загрузке WebApp.
-    Использует ту же логику, что и зависимость, но для первого запроса.
-    """
     try:
-        # Проксируем вызов в нашу новую универсальную функцию-валидатор
         user_info = await get_validated_user(request.initData)
         logger.info(f"Пользователь {user_info.get('id')} успешно прошел ПЕРВИЧНУЮ авторизацию в веб-панели.")
         return {"status": "ok", "user_id": user_info.get('id')}
     except HTTPException as e:
-        # Перехватываем ошибку из get_validated_user и возвращаем ее как есть
         raise e
     except Exception as e:
         logger.error(f"Неожиданная ошибка при первичной валидации: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail="Некорректные данные для авторизации.")
 
-
-# --- Эндпоинт для отдачи главной HTML страницы ---
 @app.get("/")
 async def read_root():
     """Отдает главную HTML страницу нашего веб-интерфейса."""

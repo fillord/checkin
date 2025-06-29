@@ -4,7 +4,6 @@ import asyncio
 import config
 import database
 import jobs
-
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -43,29 +42,22 @@ from handlers_admin import (
     holiday_delete_start, holiday_get_delete_date, bulk_update_start, handle_schedule_file, bulk_add_start, handle_add_employees_file
 )
 
-# Настройка логирования
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def main() -> None:
-    """Основная функция для запуска бота."""
     try:
         persistence = PicklePersistence(filepath=config.PERSISTENCE_FILE)
-
-        # Создаем глобальный ограничитель: не более 5 сообщений за 5 секунд на пользователя
         rate_limiter = AIORateLimiter(max_retries=5)
-
         application = (
             Application.builder()
             .token(config.BOT_TOKEN)
             .persistence(persistence)
-            .rate_limiter(rate_limiter) # <-- ДОБАВЛЯЕМ ОГРАНИЧИТЕЛЬ
+            .rate_limiter(rate_limiter)
             .build()
         )
-
-        # --- РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ---
         checkin_conv_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("start", start_command),
@@ -170,7 +162,6 @@ async def main() -> None:
                 config.SCHEDULE_FRI: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[4]],
                 config.SCHEDULE_SAT: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[5]],
                 config.SCHEDULE_SUN: [MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), schedule_handlers[6]],
-
                 config.HOLIDAY_MENU: [
                     MessageHandler(filters.Regex("^➕ Добавить праздник$"), holiday_add_start),
                     MessageHandler(filters.Regex("^➖ Удалить праздник$"), holiday_delete_start),
@@ -212,23 +203,16 @@ async def main() -> None:
         application.add_handler(bulk_update_conv)
         application.add_handler(admin_conv_handler)
         application.add_handler(checkin_conv_handler)
-
         application.add_handler(CommandHandler("mystats", get_personal_stats))
-        # Добавляем отдельный обработчик для решения админа по уходу
         application.add_handler(CallbackQueryHandler(handle_leave_request_decision, pattern="^leave:"))
         application.add_handler(CommandHandler("web", admin_web_ui))
-
         scheduler = AsyncIOScheduler(timezone=config.LOCAL_TIMEZONE)
         scheduler.add_job(jobs.check_and_send_notifications, 'interval', minutes=1, args=[application])
         scheduler.add_job(jobs.send_daily_report_job, 'cron', hour=21, minute=0, args=[application])
-
-        # Запускаем проверку каждые 15 минут в течение всего дня, чтобы охватить любой график
         scheduler.add_job(jobs.send_departure_reminders, 'cron', hour='*', minute='*/5', args=[application])
-        scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application]) # Применяем штраф в 00:05 за вчерашний день
-
+        scheduler.add_job(jobs.apply_incomplete_day_penalty, 'cron', hour=0, minute=5, args=[application])
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=14, minute=35, args=[application, 'midday'])
         scheduler.add_job(jobs.send_dashboard_snapshot, 'cron', hour=20, minute=00, args=[application, 'evening'])
-
         async with application:
             await database.init_db()
             await application.initialize()
@@ -237,11 +221,10 @@ async def main() -> None:
             scheduler.start()
             logger.info("Бот и планировщик запущены. Нажмите Ctrl+C для остановки.")
             await asyncio.Event().wait()
-
     finally:
         logger.info("Закрытие пула процессов...")
         shutdown_executor()
-
+        
 if __name__ == "__main__":
     try:
         asyncio.run(main())
