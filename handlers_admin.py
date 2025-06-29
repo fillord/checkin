@@ -674,3 +674,87 @@ async def admin_web_ui(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Нажмите на кнопку ниже, чтобы открыть веб-интерфейс администратора.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+async def replacement_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Настройка временной замены. Шаг 1: Перешлите сообщение от сотрудника, КОТОРОГО НУЖНО ЗАМЕНИТЬ.",
+        reply_markup=ReplyKeyboardMarkup([[BUTTON_ADMIN_BACK]], resize_keyboard=True)
+    )
+    return config.REPLACEMENT_GET_ORIGINAL_ID
+
+async def replacement_get_original_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not isinstance(update.message.forward_origin, MessageOriginUser):
+        await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
+        return config.REPLACEMENT_GET_ORIGINAL_ID
+    user_id = update.message.forward_origin.sender_user.id
+    employee = await database.get_employee_data(user_id)
+    if not employee:
+        await update.message.reply_text("Этот пользователь не найден в базе данных.")
+        return config.REPLACEMENT_GET_ORIGINAL_ID
+    context.user_data['original_employee_id'] = user_id
+    context.user_data['original_employee_name'] = employee['full_name']
+    await update.message.reply_text(f"Основной сотрудник: {employee['full_name']}.\n\nШаг 2: Теперь перешлите сообщение от сотрудника, КТО БУДЕТ ЗАМЕНЯТЬ.")
+    return config.REPLACEMENT_GET_SUBSTITUTE_ID
+
+async def replacement_get_substitute_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not isinstance(update.message.forward_origin, MessageOriginUser):
+        await update.message.reply_text("Ошибка. Перешлите сообщение от реального пользователя.")
+        return config.REPLACEMENT_GET_SUBSTITUTE_ID
+    user_id = update.message.forward_origin.sender_user.id
+    if user_id == context.user_data.get('original_employee_id'):
+        await update.message.reply_text("Ошибка. Нельзя заменить сотрудника самим собой.")
+        return config.REPLACEMENT_GET_SUBSTITUTE_ID
+    employee = await database.get_employee_data(user_id)
+    if not employee:
+        await update.message.reply_text("Этот пользователь не найден в базе данных.")
+        return config.REPLACEMENT_GET_SUBSTITUTE_ID
+    context.user_data['substitute_employee_id'] = user_id
+    context.user_data['substitute_employee_name'] = employee['full_name']
+    await update.message.reply_text(
+        f"Замещающий сотрудник: {employee['full_name']}\\.\n\nШаг 3: Введите период замены в формате `ДД\\.ММ\\.ГГГГ-ДД\\.ММ\\.ГГГГ`\\.",
+        parse_mode='MarkdownV2'
+    )
+    return config.REPLACEMENT_GET_PERIOD
+
+async def replacement_get_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        start_date_str, end_date_str = update.message.text.split('-')
+        start_date = datetime.strptime(start_date_str.strip(), '%d.%m.%Y').date()
+        end_date = datetime.strptime(end_date_str.strip(), '%d.%m.%Y').date()
+        if start_date > end_date or start_date < datetime.now(config.LOCAL_TIMEZONE).date():
+            await update.message.reply_text("Ошибка: Начальная дата не может быть позже конечной или в прошлом.")
+            return config.REPLACEMENT_GET_PERIOD
+        context.user_data.update({'start_date': start_date, 'end_date': end_date})
+        summary = (
+            f"**Подтвердите замену:**\n\n"
+            f"**Кого заменяют:** {context.user_data['original_employee_name']}\n"
+            f"**Кто заменяет:** {context.user_data['substitute_employee_name']}\n"
+            f"**Период:** с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')}\n\n"
+            f"Продолжить?"
+        )
+        await update.message.reply_text(text=summary, parse_mode='Markdown', reply_markup=ReplyKeyboardMarkup([["Да, подтвердить", BUTTON_ADMIN_BACK]], resize_keyboard=True))
+        return config.REPLACEMENT_CONFIRM
+    except (ValueError, IndexError):
+        await update.message.reply_text("Неверный формат. Введите период как `ДД.ММ.ГГГГ-ДД.ММ.ГГГГ`.")
+        return config.REPLACEMENT_GET_PERIOD
+
+async def replacement_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text != "Да, подтвердить":
+        await update.message.reply_text("Замена отменена.", reply_markup=admin_menu_keyboard())
+        context.user_data.clear()
+        return config.ADMIN_MENU
+    try:
+        await update.message.reply_text("Пожалуйста, подождите, идет настройка замены...")
+        await database.setup_temporary_replacement(
+            original_employee_id=context.user_data['original_employee_id'],
+            substitute_employee_id=context.user_data['substitute_employee_id'],
+            start_date=context.user_data['start_date'],
+            end_date=context.user_data['end_date']
+        )
+        await update.message.reply_text("✅ Временная замена успешно настроена!", reply_markup=admin_menu_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка при настройке временной замены: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}. Процесс отменен.", reply_markup=admin_menu_keyboard())
+    context.user_data.clear()
+    return config.ADMIN_MENU

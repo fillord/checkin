@@ -35,7 +35,7 @@ from handlers_admin import (
     admin_get_weekly_report, admin_custom_report_start, admin_custom_report_get_dates,
     admin_export_csv, admin_monthly_csv_start, admin_monthly_csv_get_month,
     admin_add_start, add_get_id, add_get_name, admin_modify_start, modify_get_id,
-    admin_delete_start, delete_get_id, delete_confirm, schedule_handler_factory,
+    admin_delete_start, delete_get_id, delete_confirm, replacement_confirm, replacement_get_original_id, replacement_get_period, replacement_get_substitute_id, replacement_start, schedule_handler_factory,
     admin_back_to_menu, handle_leave_request_decision, admin_add_leave_start, admin_add_leave_get_id,
     admin_add_leave_get_type, admin_add_leave_get_period, admin_cancel_leave_start, admin_cancel_leave_get_id, admin_cancel_leave_get_period,
     admin_web_ui, schedule_get_effective_date, admin_holidays_menu, holiday_add_start, holiday_get_add_date, holiday_get_add_name,
@@ -111,6 +111,7 @@ async def main() -> None:
                     MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_LEAVE}$"), admin_add_leave_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_LEAVE}$"), admin_cancel_leave_start),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_MANAGE_HOLIDAYS}$"), admin_holidays_menu),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_TEMP_REPLACEMENT}$"), replacement_start),
                 ],
                 config.ADMIN_REPORTS_MENU: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_REPORT_TODAY}$"), admin_get_today_report),
@@ -178,7 +179,11 @@ async def main() -> None:
                 config.HOLIDAY_GET_DELETE_DATE: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_holidays_menu),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, holiday_get_delete_date)
-                ]
+                ],
+                config.REPLACEMENT_GET_ORIGINAL_ID: [MessageHandler(filters.FORWARDED, replacement_get_original_id)],
+                config.REPLACEMENT_GET_SUBSTITUTE_ID: [MessageHandler(filters.FORWARDED, replacement_get_substitute_id)],
+                config.REPLACEMENT_GET_PERIOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, replacement_get_period)],
+                config.REPLACEMENT_CONFIRM: [MessageHandler(filters.Regex("^Да, подтвердить$"), replacement_confirm)],
             },
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
             name="admin_conversation", persistent=True,

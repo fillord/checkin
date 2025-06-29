@@ -18,6 +18,8 @@ def _build_composite_status(status_list: list, is_work_day: bool, is_past_date: 
         return 'Отпуск'
     if 'SICK_LEAVE' in status_list:
         return 'Больничный'
+    if 'REPLACEMENT' in status_list:
+        return 'Замещен(а)'
     if 'ABSENT' in status_list:
         return "Прогул"
     arrival_status = ""
@@ -772,5 +774,84 @@ async def mark_as_absent(telegram_id: int, for_date: date):
                 timestamp_utc, telegram_id,
             )
             logger.info(f"Сотрудник {telegram_id} помечен как 'прогул' за {for_date.isoformat()}")
+    finally:
+        await conn.close()
+
+async def get_active_schedule_for_employee(conn, telegram_id: int, on_date: date) -> dict:
+    """
+    Вспомогательная функция для получения активного расписания сотрудника на конкретную дату.
+    Возвращает словарь {day_of_week: {'start': time, 'end': time}}.
+    """
+    query = """
+        SELECT day_of_week, start_time, end_time
+        FROM schedules
+        WHERE employee_telegram_id = $1
+          AND effective_from_date = (
+            SELECT MAX(effective_from_date)
+            FROM schedules
+            WHERE employee_telegram_id = $1
+              AND effective_from_date <= $2
+          )
+    """
+    rows = await conn.fetch(query, telegram_id, on_date)
+    schedule = {}
+    for row in rows:
+        schedule[row['day_of_week']] = {
+            'start': row['start_time'],
+            'end': row['end_time']
+        }
+    return schedule
+
+async def setup_temporary_replacement(original_employee_id: int, substitute_employee_id: int, start_date: date, end_date: date):
+    """
+    Настраивает временную замену одного сотрудника другим.
+    1. Отправляет основного сотрудника в "отпуск" на этот период.
+    2. Копирует расписание основного сотрудника для замещающего на период замены.
+    3. Восстанавливает исходное расписание замещающего сотрудника после окончания периода.
+    """
+    conn = await get_db_connection()
+    try:
+        async with conn.transaction():
+            original_schedule = await get_active_schedule_for_employee(conn, original_employee_id, start_date)
+            substitute_original_schedule = await get_active_schedule_for_employee(conn, substitute_employee_id, start_date)
+
+            if not original_schedule:
+                raise ValueError(f"Не удалось найти активное расписание для основного сотрудника {original_employee_id}")
+
+            # 1. Отправляем основного сотрудника в "отпуск"
+            await conn.execute(
+                "INSERT INTO leaves (employee_telegram_id, start_date, end_date, leave_type) VALUES ($1, $2, $3, 'REPLACEMENT')",
+                original_employee_id, start_date, end_date
+            )
+
+            # 2. Применяем расписание основного к замещающему на период
+            for day_of_week, times in original_schedule.items():
+                await conn.execute(
+                    """
+                    INSERT INTO schedules (employee_telegram_id, day_of_week, effective_from_date, start_time, end_time)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (employee_telegram_id, day_of_week, effective_from_date) DO UPDATE SET
+                        start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time
+                    """,
+                    substitute_employee_id, day_of_week, start_date, times.get('start'), times.get('end')
+                )
+
+            # 3. Планируем восстановление расписания замещающего после периода
+            restore_date = end_date + timedelta(days=1)
+            schedule_to_restore = substitute_original_schedule if substitute_original_schedule else {}
+            for day_of_week in range(7):
+                times = schedule_to_restore.get(day_of_week)
+                start_time = times.get('start') if times else None
+                end_time = times.get('end') if times else None
+                await conn.execute(
+                    """
+                    INSERT INTO schedules (employee_telegram_id, day_of_week, effective_from_date, start_time, end_time)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (employee_telegram_id, day_of_week, effective_from_date) DO UPDATE SET
+                        start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time
+                    """,
+                    substitute_employee_id, day_of_week, restore_date, start_time, end_time
+                )
+            logger.info(f"Временная замена настроена: {substitute_employee_id} заменяет {original_employee_id} с {start_date} по {end_date}")
     finally:
         await conn.close()

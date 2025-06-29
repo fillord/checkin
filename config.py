@@ -62,6 +62,12 @@ AWAITING_NEW_FACE_PHOTO = 27
 ) = range(28, 32)
 AWAITING_SCHEDULE_FILE = 32
 AWAITING_ADD_EMPLOYEES_FILE = 33
+(
+    REPLACEMENT_GET_ORIGINAL_ID,
+    REPLACEMENT_GET_SUBSTITUTE_ID,
+    REPLACEMENT_GET_PERIOD,
+    REPLACEMENT_CONFIRM,
+) = range(34, 38)
 
 BUTTON_ARRIVAL = "✅ Приход"
 BUTTON_DEPARTURE = "🏁 Уход"
@@ -88,6 +94,7 @@ BUTTON_MANAGE_HOLIDAYS = "🎉 Управление праздниками"
 BUTTON_MY_SCHEDULE = "📅 Мой график" 
 BUTTON_CANCEL_ACTION = "❌ Отмена"
 BUTTON_MY_STATS = "📊 Моя статистика" 
+BUTTON_TEMP_REPLACEMENT = "🔄 Временная замена"
 
 LIVENESS_ACTIONS = ["улыбнитесь в камеру", "покажите на камеру большой палец 👍", "покажите на камеру знак 'мир' двумя пальцами ✌️"]
 DAYS_OF_WEEK = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
