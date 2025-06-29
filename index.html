@@ -282,6 +282,41 @@
         </article>
     </dialog>
 
+    <dialog id="replacement-modal">
+        <article class="modal-body">
+            <header>
+                <a href="#close" aria-label="Close" class="close" data-target="replacement-modal"></a>
+                <strong id="replacement-modal-header">Временная замена</strong>
+            </header>
+            <form id="replacement-form">
+                <input type="hidden" id="replacement-original-id">
+
+                <label for="replacement-original-name">Сотрудник, которого заменяют</label>
+                <input type="text" id="replacement-original-name" readonly>
+
+                <label for="substitute-select">Кто будет заменять</label>
+                <select id="substitute-select" required>
+                    <option value="">Загрузка...</option>
+                </select>
+
+                <div class="grid">
+                    <label for="replacement-start-date">
+                        Начало периода
+                        <input type="date" id="replacement-start-date" required>
+                    </label>
+                    <label for="replacement-end-date">
+                        Конец периода
+                        <input type="date" id="replacement-end-date" required>
+                    </label>
+                </div>
+                <p id="replacement-error" style="color: var(--pico-color-red); display: none;"></p>
+                <footer>
+                    <button type="submit">✅ Назначить замену</button>
+                </footer>
+            </form>
+        </article>
+    </dialog>
+
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
         const tg = window.Telegram.WebApp;
@@ -354,8 +389,9 @@
             document.querySelector('#employees-table thead').addEventListener('click', handleSortClick);
             document.getElementById('employees-tbody').addEventListener('click', handleEmployeeActionClick);
             document.getElementById('report-form').addEventListener('submit', handleReportFormSubmit);
-            document.getElementById('leave-form').addEventListener('submit', handleLeaveFormSubmit);
-            document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => e.target.closest('form').requestSubmit(e.target));
+            document.getElementById('replacement-form').addEventListener('submit', handleReplacementFormSubmit);
+            document.querySelector("#leave-form button[data-action='add-leave']").addEventListener('click', (e) => handleLeaveFormSubmit(e, 'add-leave'));
+            document.querySelector("#leave-form button[data-action='cancel-leave']").addEventListener('click', (e) => handleLeaveFormSubmit(e, 'cancel-leave'));
             
             document.getElementById('holiday-year-select').addEventListener('change', loadHolidays);
             document.getElementById('add-holiday-form').addEventListener('submit', handleAddHoliday);
@@ -650,6 +686,7 @@
                             createBtn('История', 'view_log', employee.id, employee.full_name),
                             createBtn('Изменить', 'edit', employee.id, employee.full_name),
                             createBtn('Отсутствие', 'manage-leave', employee.id, employee.full_name),
+                            createBtn('Замена', 'replacement', employee.id, employee.full_name),
                             createBtn('Удалить', 'deactivate', employee.id, employee.full_name, true)
                         );
                     });
@@ -680,7 +717,9 @@
             } else if (action === 'edit') {
                 openEditModalFor(employeeId);
             } else if (action === 'view_log') {
-                openLogModalFor(employeeId, employeeName);
+                openLogModalFor(employeeId, employeeName);   
+            } else if (action === 'replacement') {
+                openReplacementModalFor(employeeId, employeeName);
             }
         }
 
@@ -788,12 +827,13 @@
             });
         }
 
-        function handleLeaveFormSubmit(event) {
-            event.preventDefault();
-            const actionButton = event.submitter;
-            const action = actionButton.dataset.action;
-            const apiUrl = (action === 'add-leave') ? '/api/leaves/add' : '/api/leaves/cancel';
+        function handleLeaveFormSubmit(event, action) {
+            event.preventDefault(); // Предотвращаем стандартную отправку формы
+            
+            const form = event.target.closest('form');
+            const actionButton = form.querySelector(`button[data-action='${action}']`);
             const errorDiv = document.getElementById('leave-error');
+            const apiUrl = (action === 'add-leave') ? '/api/leaves/add' : '/api/leaves/cancel';
 
             const requestBody = {
                 employee_id: parseInt(document.getElementById('leave-employee-id').value),
@@ -921,6 +961,78 @@
             table.appendChild(thead);
             table.appendChild(tbody);
         }
+    function openReplacementModalFor(employeeId, employeeName) {
+        const modal = document.getElementById('replacement-modal');
+        document.getElementById('replacement-modal-header').textContent = `Замена для: ${employeeName}`;
+        document.getElementById('replacement-original-id').value = employeeId;
+        document.getElementById('replacement-original-name').value = employeeName;
+
+        const substituteSelect = document.getElementById('substitute-select');
+        substituteSelect.innerHTML = '<option value="">Загрузка списка...</option>';
+        substituteSelect.disabled = true;
+
+        modal.showModal();
+
+        // Загружаем список всех сотрудников для выбора
+        apiFetch('/api/employees')
+            .then(employees => {
+                substituteSelect.innerHTML = '<option value="">-- Выберите сотрудника --</option>';
+                employees.forEach(emp => {
+                    // Нельзя выбрать самого себя в качестве замены
+                    if (emp.id !== parseInt(employeeId)) {
+                        const option = new Option(emp.full_name, emp.id);
+                        substituteSelect.add(option);
+                    }
+                });
+                substituteSelect.disabled = false;
+            })
+            .catch(error => {
+                substituteSelect.innerHTML = `<option value="">Ошибка загрузки</option>`;
+                console.error("Ошибка загрузки сотрудников для замены:", error);
+            });
+    }
+
+    function handleReplacementFormSubmit(event) {
+        event.preventDefault();
+        const form = event.target;
+        const submitButton = form.querySelector('button[type="submit"]');
+        const errorDiv = document.getElementById('replacement-error');
+        errorDiv.style.display = 'none';
+
+        const requestBody = {
+            original_employee_id: parseInt(document.getElementById('replacement-original-id').value),
+            substitute_employee_id: parseInt(document.getElementById('substitute-select').value),
+            start_date: document.getElementById('replacement-start-date').value,
+            end_date: document.getElementById('replacement-end-date').value
+        };
+
+        if (!requestBody.substitute_employee_id || !requestBody.start_date || !requestBody.end_date) {
+            errorDiv.textContent = 'Ошибка: Пожалуйста, заполните все поля.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+
+        submitButton.setAttribute('aria-busy', 'true');
+        submitButton.disabled = true;
+
+        apiFetch('/api/employees/replacement', {
+            method: 'POST',
+            body: JSON.stringify(requestBody)
+        })
+        .then(result => {
+            alert(`Успешно: ${result.message}`);
+            document.getElementById('replacement-modal').close();
+            form.reset();
+        })
+        .catch(error => {
+            errorDiv.textContent = `Ошибка: ${error.message}`;
+            errorDiv.style.display = 'block';
+        })
+        .finally(() => {
+            submitButton.removeAttribute('aria-busy');
+            submitButton.disabled = false;
+        });
+    }
     </script>
 </body>
 </html>

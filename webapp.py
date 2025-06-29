@@ -33,6 +33,12 @@ class LeaveRequest(BaseModel):
     start_date: date
     end_date: date
 
+class ReplacementRequest(BaseModel):
+    original_employee_id: int
+    substitute_employee_id: int
+    start_date: date
+    end_date: date
+
 class ScheduleData(BaseModel):
     start: Optional[str] = None
     end: Optional[str] = None
@@ -234,6 +240,28 @@ async def cancel_leave(request: LeaveRequest, user: Annotated[dict, Depends(get_
         return {"status": "success", "message": f"Записи об отсутствии удалены ({rows_deleted} шт.)"}
     except Exception as e:
         logger.error(f"Ошибка при отмене периода отсутствия через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
+
+@app.post("/api/employees/replacement")
+async def create_replacement(request: ReplacementRequest, user: Annotated[dict, Depends(get_validated_user)]):
+    """Создает временную замену сотрудника."""
+    if request.original_employee_id == request.substitute_employee_id:
+        raise HTTPException(status_code=400, detail="Сотрудник не может заменять сам себя.")
+    if request.start_date > request.end_date:
+         raise HTTPException(status_code=400, detail="Начальная дата не может быть позже конечной.")
+    try:
+        await database.setup_temporary_replacement(
+            original_employee_id=request.original_employee_id,
+            substitute_employee_id=request.substitute_employee_id,
+            start_date=request.start_date,
+            end_date=request.end_date
+        )
+        return {"status": "success", "message": "Временная замена успешно настроена."}
+    except ValueError as ve:
+         logger.warning(f"Ошибка при настройке замены: {ve}")
+         raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Ошибка при создании замены через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
 
 @app.get("/api/reports/monthly/{year}/{month}")

@@ -18,8 +18,6 @@ def _build_composite_status(status_list: list, is_work_day: bool, is_past_date: 
         return 'Отпуск'
     if 'SICK_LEAVE' in status_list:
         return 'Больничный'
-    if 'REPLACEMENT' in status_list:
-        return 'Замещен(а)'
     if 'ABSENT' in status_list:
         return "Прогул"
     arrival_status = ""
@@ -96,6 +94,7 @@ async def init_db():
                 start_date DATE NOT NULL,
                 end_date DATE NOT NULL,
                 leave_type TEXT NOT NULL, -- 'VACATION' или 'SICK_LEAVE'
+                substitute_employee_id BIGINT, 
                 FOREIGN KEY (employee_telegram_id) REFERENCES employees (telegram_id) ON DELETE CASCADE
             );
         """)
@@ -518,6 +517,8 @@ async def cancel_leave_period(telegram_id: int, start_date: date, end_date: date
     finally:
         await conn.close()
 
+# database.py
+
 async def get_monthly_summary_data(year: int, month: int) -> list[list]:
     conn = await get_db_connection()
     try:
@@ -525,23 +526,22 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         num_days = calendar.monthrange(year, month)[1]
         end_date = date(year, month, num_days)
         today = datetime.now(LOCAL_TIMEZONE).date()
+
         emp_rows = await conn.fetch("SELECT telegram_id, full_name FROM employees WHERE is_active = TRUE ORDER BY full_name")
         all_employees = {row['telegram_id']: row['full_name'] for row in emp_rows}
         employee_ids = list(all_employees.keys())
+
         holidays_rows = await conn.fetch("SELECT holiday_date FROM holidays WHERE holiday_date BETWEEN $1 AND $2", start_date, end_date)
         holidays_set = {row['holiday_date'] for row in holidays_rows}
+
         schedule_rows = await conn.fetch(
-            """
-            SELECT employee_telegram_id, day_of_week, effective_from_date, start_time
-            FROM schedules
-            WHERE employee_telegram_id = ANY($1)
-            ORDER BY employee_telegram_id, effective_from_date DESC
-            """,
+            "SELECT employee_telegram_id, day_of_week, effective_from_date, start_time FROM schedules WHERE employee_telegram_id = ANY($1) ORDER BY employee_telegram_id, effective_from_date DESC",
             employee_ids
         )
         schedules_by_employee = defaultdict(list)
         for row in schedule_rows:
             schedules_by_employee[row['employee_telegram_id']].append(dict(row))
+
         start_dt_utc = datetime.combine(start_date, time.min, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
         end_dt_utc = datetime.combine(end_date, time.max, tzinfo=LOCAL_TIMEZONE).astimezone(ZoneInfo("UTC"))
         event_rows = await conn.fetch("SELECT employee_telegram_id, timestamp, status FROM check_ins WHERE timestamp BETWEEN $1 AND $2", start_dt_utc, end_dt_utc)
@@ -549,33 +549,64 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         for row in event_rows:
             local_date_iso = row['timestamp'].astimezone(LOCAL_TIMEZONE).date().isoformat()
             checkins[row['employee_telegram_id']][local_date_iso].append(row['status'])
-        leaves_rows = await conn.fetch("SELECT employee_telegram_id, start_date, end_date, leave_type FROM leaves WHERE start_date <= $1 AND end_date >= $2", end_date, start_date)
+
+        # --- Новая логика для замен ---
+        leaves_rows = await conn.fetch("SELECT employee_telegram_id, start_date, end_date, leave_type, substitute_employee_id FROM leaves WHERE start_date <= $1 AND end_date >= $2", end_date, start_date)
+
+        replacement_map = {} # (original_id, date) -> substitute_id
+        substitute_map = {}  # (substitute_id, date) -> original_id
+
         for row in leaves_rows:
-            current_date = row['start_date']
-            while current_date <= row['end_date']:
-                if start_date <= current_date <= end_date:
-                     checkins[row['employee_telegram_id']][current_date.isoformat()].append(row['leave_type'])
-                current_date += timedelta(days=1)
+            current_d = row['start_date']
+            while current_d <= row['end_date']:
+                if start_date <= current_d <= end_date:
+                    if row['leave_type'] == 'REPLACEMENT' and row['substitute_employee_id']:
+                        replacement_map[(row['employee_telegram_id'], current_d)] = row['substitute_employee_id']
+                        substitute_map[(row['substitute_employee_id'], current_d)] = row['employee_telegram_id']
+                    else:
+                        # Обрабатываем обычные отпуски/больничные
+                        checkins[row['employee_telegram_id']][current_d.isoformat()].append(row['leave_type'])
+                current_d += timedelta(days=1)
+        # --- Конец новой логики ---
+
         def is_work_day_from_cache(emp_id, target_date, schedule_cache):
             for schedule_version in schedule_cache.get(emp_id, []):
                 if schedule_version['effective_from_date'] <= target_date:
                     if schedule_version['day_of_week'] == target_date.weekday():
                         return schedule_version['start_time'] is not None
             return False
+
         header = ["Сотрудник"] + [f"{day:02d}.{month:02d}" for day in range(1, num_days + 1)]
         result_table = [header]
+
         for emp_id, name in all_employees.items():
             employee_row = [name]
             for day in range(1, num_days + 1):
                 current_date = date(year, month, day)
-                is_work_day = is_work_day_from_cache(emp_id, current_date, schedules_by_employee)
-                status_list = checkins.get(emp_id, {}).get(current_date.isoformat(), [])
-                final_status_str = _build_composite_status(
-                    status_list, 
-                    is_work_day=is_work_day,
-                    is_past_date=(current_date <= today),
-                    is_holiday=(current_date in holidays_set)
-                )
+                final_status_str = ""
+
+                # Проверяем, был ли этот сотрудник заменяющим в этот день
+                if (emp_id, current_date) in substitute_map:
+                    original_emp_id = substitute_map[(emp_id, current_date)]
+                    original_emp_name = all_employees.get(original_emp_id, f"ID:{original_emp_id}")
+                    final_status_str = f"Заменял(а) {original_emp_name.split()[0]}"
+                else:
+                    # Если нет, строим статус как обычно, но с возможной подменой ID
+                    employee_id_for_status = emp_id
+                    # Проверяем, заменяли ли этого сотрудника
+                    if (emp_id, current_date) in replacement_map:
+                        employee_id_for_status = replacement_map[(emp_id, current_date)] # Берем ID того, кто работал
+
+                    status_list = checkins.get(employee_id_for_status, {}).get(current_date.isoformat(), [])
+                    is_work_day = is_work_day_from_cache(emp_id, current_date, schedules_by_employee)
+
+                    final_status_str = _build_composite_status(
+                        status_list,
+                        is_work_day=is_work_day,
+                        is_past_date=(current_date <= today),
+                        is_holiday=(current_date in holidays_set)
+                    )
+
                 employee_row.append(final_status_str)
             result_table.append(employee_row)
         return result_table
@@ -584,6 +615,7 @@ async def get_monthly_summary_data(year: int, month: int) -> list[list]:
         return []
     finally:
         await conn.close()
+        
 async def get_employee_log(employee_id: int, start_date: date, end_date: date) -> list[dict]:
     start_dt_utc = datetime.combine(start_date, time.min).astimezone(ZoneInfo("UTC"))
     end_dt_utc = datetime.combine(end_date, time.max).astimezone(ZoneInfo("UTC"))
@@ -820,8 +852,11 @@ async def setup_temporary_replacement(original_employee_id: int, substitute_empl
 
             # 1. Отправляем основного сотрудника в "отпуск"
             await conn.execute(
-                "INSERT INTO leaves (employee_telegram_id, start_date, end_date, leave_type) VALUES ($1, $2, $3, 'REPLACEMENT')",
-                original_employee_id, start_date, end_date
+                """
+                INSERT INTO leaves (employee_telegram_id, start_date, end_date, leave_type, substitute_employee_id) 
+                VALUES ($1, $2, $3, 'REPLACEMENT', $4)
+                """,
+                original_employee_id, start_date, end_date, substitute_employee_id
             )
 
             # 2. Применяем расписание основного к замещающему на период
