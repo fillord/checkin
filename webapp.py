@@ -65,6 +65,9 @@ class Holiday(BaseModel):
 class HolidayDeleteRequest(BaseModel):
     holiday_date: date
 
+class CancelReplacementRequest(BaseModel):
+    leave_id: int
+
 async def get_validated_user(x_telegram_init_data: Annotated[str, Header()]) -> dict:
     try:
         init_data = x_telegram_init_data
@@ -264,12 +267,26 @@ async def create_replacement(request: ReplacementRequest, user: Annotated[dict, 
         logger.error(f"Ошибка при создании замены через API: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ошибка сервера: {e}")
 
+@app.get("/api/replacements")
+async def get_replacements(user: Annotated[dict, Depends(get_validated_user)]):
+    """Возвращает список активных и будущих замен."""
+    return await database.get_active_and_future_replacements()
+
+@app.post("/api/replacements/cancel")
+async def cancel_replacement_api(request: CancelReplacementRequest, user: Annotated[dict, Depends(get_validated_user)]):
+    """Отменяет замену по ее ID."""
+    try:
+        await database.cancel_replacement(request.leave_id)
+        return {"status": "success", "message": "Замена успешно отменена."}
+    except Exception as e:
+        logger.error(f"Ошибка отмены замены через API: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/reports/monthly/{year}/{month}")
 async def get_monthly_report(year: int, month: int, user: Annotated[dict, Depends(get_validated_user)]):
     try:
         report_data = await database.get_monthly_summary_data(year, month)
         if not report_data or len(report_data) <= 1:
-            # Возвращаем пустые данные вместо 404, чтобы фронтенд мог отобразить "Нет данных"
             return {"data": []}
         return {"data": report_data}
     except Exception as e:

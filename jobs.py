@@ -221,7 +221,9 @@ async def check_for_absentees(context: ContextTypes.DEFAULT_TYPE):
     if await is_holiday(today):
         logger.info(f"Сегодня ({today.isoformat()}) праздник. Проверка на прогулы отключена.")
         return
-
+    today_str = today.isoformat()
+    if 'notifications_sent' not in context.bot_data:
+        context.bot_data['notifications_sent'] = {}
     employees = await database.get_all_active_employees_with_schedules(today)
     if not employees:
         return
@@ -235,19 +237,20 @@ async def check_for_absentees(context: ContextTypes.DEFAULT_TYPE):
             start_time = start_time_str if isinstance(start_time_str, time) else time.fromisoformat(start_time_str)
             shift_start_datetime = datetime.combine(today, start_time, tzinfo=LOCAL_TIMEZONE)
 
-            # Проверяем, прошло ли 3 часа с начала смены
             if now > shift_start_datetime + timedelta(hours=3):
-                # Проверяем, не отметился ли сотрудник уже
-                if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
-                    # Отмечаем как прогул
-                    await database.mark_as_absent(emp_id, today)
-                    logger.info(f"Сотрудник {name} (ID: {emp_id}) автоматически отмечен как прогульщик.")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=emp_id,
-                            text="Вы были автоматически отмечены как 'прогул', так как не отметили приход в течение 3 часов от начала вашего рабочего дня."
-                        )
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить уведомление о прогуле сотруднику {name}: {e}")
+                notification_key = f"{emp_id}_absent_penalty_{today_str}"
+                if not context.bot_data['notifications_sent'].get(notification_key):
+                    if not await database.has_checked_in_today(emp_id, "ARRIVAL"):
+                        await database.mark_as_absent(emp_id, today)
+                        logger.info(f"Сотрудник {name} (ID: {emp_id}) автоматически отмечен как прогульщик.")
+                        
+                        try:
+                            await context.bot.send_message(
+                                chat_id=emp_id,
+                                text="Вы были автоматически отмечены как 'прогул', так как не отметили приход в течение 3 часов от начала вашего рабочего дня."
+                            )
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить уведомление о прогуле сотруднику {name}: {e}")
+                        context.bot_data['notifications_sent'][notification_key] = True
         except Exception as e:
             logger.error(f"Ошибка в цикле проверки прогулов для {name} (ID: {emp_id}): {e}", exc_info=True)

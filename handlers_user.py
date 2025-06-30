@@ -1,4 +1,3 @@
-# handlers_user.py
 import logging
 import asyncio
 import random
@@ -64,8 +63,19 @@ async def verify_face(user_id: int, new_photo_file_id: str, context: ContextType
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     employee_data = await database.get_employee_data(user.id)
+
     if not employee_data:
-        await update.message.reply_text("Вы не зарегистрированы в системе.", reply_markup=ReplyKeyboardRemove())
+        if user.id in config.ADMIN_IDS:
+            await update.message.reply_text(
+                "Вы вошли как администратор, но не зарегистрированы как сотрудник. "
+                "Для управления системой используйте команду /admin.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            await update.message.reply_text(
+                "Вы не зарегистрированы в системе. Обратитесь к администратору.",
+                reply_markup=ReplyKeyboardRemove()
+            )
         return ConversationHandler.END
     if not employee_data["face_encoding"]:
         await update.message.reply_text(
@@ -73,10 +83,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             reply_markup=ReplyKeyboardRemove()
         )
         return config.REGISTER_FACE
-    await update.message.reply_text(
-        f"Здравствуйте, {employee_data['full_name']}! Выберите действие:",
-        reply_markup=main_menu_keyboard()
-    )
+
+    if user.id in config.ADMIN_IDS:
+        message_text = (f"Здравствуйте, {employee_data['full_name']}!\n\n"
+                        f"Вы вошли как сотрудник. Для доступа к панели управления используйте команду /admin.")
+    else:
+        message_text = f"Здравствуйте, {employee_data['full_name']}! Выберите действие:"
+
+    await update.message.reply_text(message_text, reply_markup=main_menu_keyboard())
     return config.CHOOSE_ACTION
 
 async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -103,6 +117,18 @@ async def register_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки 'Приход' для своевременных и опоздавших сотрудников."""
     user = update.effective_user
+    now_local = datetime.now(database.LOCAL_TIMEZONE)
+    today = now_local.date()
+
+    replacement_info = await database.get_replacement_info(user.id, today)
+    if replacement_info:
+        substitute_name = replacement_info.get('full_name', 'другой сотрудник')
+        await update.message.reply_text(
+            f"Вы не можете отметиться сегодня, так как вас заменяет {substitute_name}. "
+            "Если это ошибка, пожалуйста, свяжитесь с администратором.",
+            reply_markup=main_menu_keyboard()
+        )
+        return CHOOSE_ACTION
 
     if await database.has_checked_in_today(user.id, "ARRIVAL"):
         await update.message.reply_text("Вы уже отмечали приход сегодня.", reply_markup=main_menu_keyboard())
@@ -112,16 +138,16 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not schedule or not schedule.get('start_time'):
          await update.message.reply_text("Ваш график на сегодня не настроен. Невозможно отметиться.", reply_markup=main_menu_keyboard())
          return CHOOSE_ACTION
-    now_local = datetime.now(database.LOCAL_TIMEZONE)
-    shift_start_datetime = datetime.combine(now_local.date(), schedule['start_time'], tzinfo=database.LOCAL_TIMEZONE)
 
-    if now_local > shift_start_datetime + timedelta(hours=3):
+    shift_start_datetime = datetime.combine(today, schedule['start_time'], tzinfo=database.LOCAL_TIMEZONE)
+
+    if now_local > shift_start_datetime + timedelta(hours=3): 
         await update.message.reply_text(
             "Вы не можете отметиться, так как прошло более 3 часов с начала вашего рабочего дня. "
             "Вы были отмечены как 'прогул'. Пожалуйста, свяжитесь с администратором.",
             reply_markup=main_menu_keyboard()
         )
-        await database.mark_as_absent(user.id, now_local.date())
+        await database.mark_as_absent(user.id, today)
         return CHOOSE_ACTION
 
     is_unhandled_late = user.id in context.bot_data.get('unhandled_late_users', set())
@@ -129,8 +155,8 @@ async def handle_arrival(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info(f"Пользователь {user.id} нажал 'Приход' будучи в списке опоздавших. Начинаем late check-in.")
         context.user_data["is_late"] = True
     else:
-        grace_period_end = (datetime.combine(date.today(), schedule['start_time']) + timedelta(minutes=5)).time()
-        if datetime.now(database.LOCAL_TIMEZONE).time() > grace_period_end:
+        grace_period_end = (datetime.combine(today, schedule['start_time']) + timedelta(minutes=5)).time()
+        if now_local.time() > grace_period_end:
             await update.message.reply_text(f"Вы опоздали. Ваше время для самостоятельного чекина истекло в {grace_period_end.strftime('%H:%M')}.", reply_markup=main_menu_keyboard())
             return CHOOSE_ACTION
         context.user_data["is_late"] = False

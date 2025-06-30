@@ -118,6 +118,22 @@
                 </form>
             </details>
 
+            <details>
+                <summary><strong>Управление заменами</strong></summary>
+                <div id="replacements-loading" aria-busy="true" style="display: none;">Загрузка замен...</div>
+                <table id="replacements-table" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Кого заменяют</th>
+                            <th>Кто заменяет</th>
+                            <th>Период</th>
+                            <th>Действие</th>
+                        </tr>
+                    </thead>
+                    <tbody id="replacements-tbody"></tbody>
+                </table>
+            </details>
+
             <details open>
                 <summary><strong>Сводный отчет за месяц</strong></summary>
                 <form id="report-form">
@@ -1031,6 +1047,71 @@
         .finally(() => {
             submitButton.removeAttribute('aria-busy');
             submitButton.disabled = false;
+        });
+    }
+    // Внутри initializePage()
+    loadReplacements(); // Добавьте этот вызов
+
+    // В конец <script> добавьте эти две функции
+    function loadReplacements() {
+        const loading = document.getElementById('replacements-loading');
+        const table = document.getElementById('replacements-table');
+        const tbody = document.getElementById('replacements-tbody');
+
+        loading.style.display = 'block';
+        table.style.display = 'none';
+        tbody.innerHTML = '';
+
+        apiFetch('/api/replacements')
+            .then(data => {
+                loading.style.display = 'none';
+                table.style.display = 'table';
+                if (data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4">Активных замен нет.</td></tr>';
+                    return;
+                }
+                data.forEach(r => {
+                    const row = tbody.insertRow();
+                    row.insertCell().textContent = r.original_employee_name;
+                    row.insertCell().textContent = r.substitute_employee_name;
+                    row.insertCell().textContent = `${new Date(r.start_date).toLocaleDateString()} - ${new Date(r.end_date).toLocaleDateString()}`;
+                    const actionCell = row.insertCell();
+                    const cancelButton = document.createElement('button');
+                    cancelButton.textContent = 'Отменить';
+                    cancelButton.className = 'secondary outline';
+                    cancelButton.dataset.leaveId = r.leave_id;
+                    cancelButton.onclick = handleCancelReplacementClick;
+                    actionCell.appendChild(cancelButton);
+                });
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                tbody.innerHTML = `<tr><td colspan="4">Ошибка загрузки: ${error.message}</td></tr>`;
+            });
+    }
+
+    function handleCancelReplacementClick(event) {
+        const leaveId = event.target.dataset.leaveId;
+        if (!confirm('Вы уверены, что хотите отменить эту замену? Это действие нельзя будет отменить.')) {
+            return;
+        }
+
+        const button = event.target;
+        button.setAttribute('aria-busy', 'true');
+        button.disabled = true;
+
+        apiFetch('/api/replacements/cancel', {
+            method: 'POST',
+            body: JSON.stringify({ leave_id: parseInt(leaveId) })
+        })
+        .then(result => {
+            alert(result.message);
+            loadReplacements(); // Обновляем список после отмены
+        })
+        .catch(error => {
+            alert(`Ошибка: ${error.message}`);
+            button.removeAttribute('aria-busy');
+            button.disabled = false;
         });
     }
     </script>

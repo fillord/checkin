@@ -33,7 +33,10 @@ def parse_day_schedule(text: str) -> dict | None:
     return None
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.effective_user.id not in ADMIN_IDS: return ConversationHandler.END
+    """
+    Открывает панель администратора. Проверка прав доступа выполняется
+    фильтром в main.py, поэтому здесь она не нужна.
+    """
     await update.message.reply_text("Панель администратора:", reply_markup=admin_menu_keyboard())
     return ADMIN_MENU
 
@@ -758,3 +761,33 @@ async def replacement_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Произошла ошибка: {e}. Процесс отменен.", reply_markup=admin_menu_keyboard())
     context.user_data.clear()
     return config.ADMIN_MENU
+
+async def cancel_replacement_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начинает процесс отмены замены, показывая список активных замен."""
+    replacements = await database.get_active_and_future_replacements()
+    if not replacements:
+        await update.message.reply_text("Активных или будущих замен для отмены не найдено.")
+        return
+
+    keyboard = []
+    for r in replacements:
+        text = f"{r['original_employee_name']} ➡️ {r['substitute_employee_name']} ({r['start_date']:%d.%m} - {r['end_date']:%d.%m})"
+        keyboard.append([InlineKeyboardButton(text, callback_data=f"confirm_cancel_repl:{r['leave_id']}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Какую замену вы хотите отменить?", reply_markup=reply_markup)
+
+async def handle_cancel_replacement_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатие на inline-кнопку отмены."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        leave_id = int(query.data.split(':')[1])
+        await database.cancel_replacement(leave_id)
+        await query.edit_message_text(text=f"✅ Замена успешно отменена.\n\n({query.message.text})")
+    except (ValueError, IndexError) as e:
+        await query.edit_message_text(text=f"❌ Ошибка при обработке запроса: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при отмене замены: {e}", exc_info=True)
+        await query.edit_message_text(text=f"❌ Произошла критическая ошибка при отмене замены.")
