@@ -156,52 +156,46 @@ async def main() -> None:
                 config.REPLACEMENT_CONFIRM: [MessageHandler(filters.Regex("^Да, подтвердить$"), replacement_confirm)],
             },
             fallbacks=[MessageHandler(filters.Regex(f"^{config.BUTTON_ADMIN_BACK}$"), admin_back_to_menu), CommandHandler("cancel", admin_back_to_menu)],
-            allow_reentry=True,
             name="admin_conversation", persistent=True,
         )
 
         checkin_conv_handler = ConversationHandler(
             entry_points=[
-                 CommandHandler("start", start_command, filters=~filters.User(user_id=config.ADMIN_IDS)),
-            MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start)
+                CommandHandler("start", start_command),
+                MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start)
             ],
             states={
                 config.CHOOSE_ACTION: [
                     MessageHandler(filters.Regex(f"^{config.BUTTON_ARRIVAL}$"), handle_arrival),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_DEPARTURE}$"), handle_departure),
                     MessageHandler(filters.Regex(f"^{config.BUTTON_UPDATE_PHOTO}$"), update_photo_start),
-                    MessageHandler(filters.Regex(f"^{BUTTON_MY_SCHEDULE}$"), show_my_schedule),
-                    MessageHandler(filters.Regex(f"^{BUTTON_MY_STATS}$"), get_personal_stats),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_MY_SCHEDULE}$"), show_my_schedule),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_MY_STATS}$"), get_personal_stats),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_ASK_LEAVE}$"), ask_leave_start),
                 ],
                 config.AWAITING_LEAVE_REASON: [
-                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, ask_leave_get_reason)
                 ],
                 config.REGISTER_FACE: [
                     MessageHandler(filters.PHOTO, register_face)
                 ],
                 config.AWAITING_NEW_FACE_PHOTO: [
-                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
                     MessageHandler(filters.PHOTO, update_photo_receive)
                 ],
                 config.AWAITING_PHOTO: [
-                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
                     MessageHandler(filters.PHOTO, awaiting_photo)
                 ],
                 config.AWAITING_LOCATION: [
-                    MessageHandler(filters.Regex(f"^{BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
+                    MessageHandler(filters.Regex(f"^{config.BUTTON_CANCEL_ACTION}$"), employee_cancel_command),
                     MessageHandler(filters.LOCATION, awaiting_location)
                 ],
             },
             fallbacks=[CommandHandler("cancel", employee_cancel_command)],
             allow_reentry=True, name="checkin_conversation", persistent=True,
         )
-        schedule_handlers = [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                (lambda day_index=i: schedule_handler_factory(day_index))()
-            ) for i in range(7)
-        ]
         
         bulk_update_conv = ConversationHandler(
             entry_points=[CommandHandler("bulk_update", bulk_update_start, filters=filters.User(user_id=config.ADMIN_IDS))],
