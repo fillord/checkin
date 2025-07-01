@@ -145,6 +145,9 @@ async def admin_monthly_csv_get_month(update: Update, context: ContextTypes.DEFA
 
 async def handle_leave_request_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    if query.from_user.id not in config.ADMIN_IDS:
+        await query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
     await query.answer()
     try:
         _, action, user_id_str = query.data.split(':')
@@ -780,6 +783,10 @@ async def cancel_replacement_start(update: Update, context: ContextTypes.DEFAULT
 async def handle_cancel_replacement_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает нажатие на inline-кнопку отмены."""
     query = update.callback_query
+    if query.from_user.id not in config.ADMIN_IDS:
+        await query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    
     await query.answer()
     
     try:
